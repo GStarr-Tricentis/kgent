@@ -18,6 +18,10 @@ env/
 .coverage
 htmlcov/
 
+# Environment / secrets
+.env
+.env.*
+
 # macOS
 .DS_Store
 

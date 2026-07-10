@@ -46,7 +46,7 @@ def main() -> None:
     if MCP_AVAILABLE:
         for srv in config.mcp.servers:
             try:
-                adapter = MCPAdapter(srv.name, srv.command, srv.args)
+                adapter = MCPAdapter(srv.name, srv.command, srv.args, srv.expanded_env())
                 adapter.connect()
                 mcp_tools = adapter.list_tools()
                 for t in mcp_tools:

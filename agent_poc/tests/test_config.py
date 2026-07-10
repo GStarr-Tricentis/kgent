@@ -26,6 +26,17 @@ def test_load_config_sandbox():
     assert c.sandbox.allow_network is False
 
 
-def test_load_config_mcp_empty():
+def test_load_config_mcp_neo4j():
     c = load_config(CONFIG_PATH)
-    assert c.mcp.servers == []
+    assert len(c.mcp.servers) == 1
+    assert c.mcp.servers[0].name == "neo4j"
+    assert "NEO4J_URI" in c.mcp.servers[0].env
+
+
+def test_load_config_mcp_env_expansion():
+    import os
+    os.environ["NEO4J_PASSWORD"] = "test_secret"
+    c = load_config(CONFIG_PATH)
+    expanded = c.mcp.servers[0].expanded_env()
+    assert expanded["NEO4J_PASSWORD"] == "test_secret"
+    del os.environ["NEO4J_PASSWORD"]

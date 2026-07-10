@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel
+
+
+def _expand_env(value: str) -> str:
+    """Replace ${VAR} with the value of os.environ['VAR']."""
+    return re.sub(r"\$\{([^}]+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
+
+
+def _expand_env_in_dict(d: dict) -> dict:
+    return {k: _expand_env(v) if isinstance(v, str) else v for k, v in d.items()}
 
 
 class ModelConfig(BaseModel):
@@ -24,6 +35,10 @@ class MCPServerConfig(BaseModel):
     name: str
     command: str
     args: list[str] = []
+    env: dict[str, str] = {}
+
+    def expanded_env(self) -> dict[str, str]:
+        return _expand_env_in_dict(self.env)
 
 
 class MCPConfig(BaseModel):

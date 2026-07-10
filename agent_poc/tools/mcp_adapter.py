@@ -20,10 +20,11 @@ class MCPAdapter:
     # subprocess, performs the MCP handshake, calls the tool, then closes.
     # This avoids persistent session management at the cost of per-call latency.
 
-    def __init__(self, name: str, command: str, args: list[str]) -> None:
+    def __init__(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None) -> None:
         self._name = name
         self._command = command
         self._args = args
+        self._env = env or {}
         self._tools: list[RegisteredTool] = []
 
     def connect(self) -> None:
@@ -32,7 +33,7 @@ class MCPAdapter:
             return
 
         async def _fetch():
-            params = StdioServerParameters(command=self._command, args=self._args)
+            params = StdioServerParameters(command=self._command, args=self._args, env=self._env or None)
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
@@ -63,7 +64,7 @@ class MCPAdapter:
             return "ERROR: mcp package not installed"
 
         async def _call():
-            params = StdioServerParameters(command=self._command, args=self._args)
+            params = StdioServerParameters(command=self._command, args=self._args, env=self._env or None)
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
