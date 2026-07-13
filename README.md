@@ -202,6 +202,6 @@ AGENT_MODEL=llama3.1:8b pytest agent_poc/tests/integration/ -v -m integration
 ## Known limitations
 
 - **No true network isolation on macOS** — the sandbox subprocess runs with the same network access as the parent. Blocking outbound connections requires a firewall rule or container.
-- **MCP reconnects per call** — each tool invocation opens a new MCP subprocess, performs the handshake, calls the tool, then closes. This avoids persistent session management but adds ~100–500 ms of latency per MCP tool call.
+- **No MCP reconnect on failure** — MCP adapters connect once at startup and are reused for the life of the registry. If an MCP subprocess dies mid-run, there is no automatic reconnect; subsequent calls to that tool will fail.
 - **Shell tool has no safelist** — `shell` runs arbitrary commands as the current user. Intended for local/trusted use only.
 - **Generated tool code runs in sandbox** — only stdlib is available; third-party packages installed in the venv are not accessible from inside `python_exec`.
