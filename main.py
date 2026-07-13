@@ -2,24 +2,10 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
 
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
-
-
-def _load_dotenv(path: str = ".env") -> None:
-    """Load KEY=VALUE pairs from a .env file into os.environ."""
-    p = Path(path)
-    if not p.exists():
-        return
-    for line in p.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
 
 
 def main() -> None:
@@ -29,7 +15,8 @@ def main() -> None:
     parser.add_argument("--prompt", default=None, help="Single prompt (non-interactive)")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
-    _load_dotenv()
+    from agent_poc.config.loader import load_dotenv
+    load_dotenv()
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 

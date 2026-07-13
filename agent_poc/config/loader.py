@@ -8,6 +8,19 @@ import yaml
 from pydantic import BaseModel
 
 
+def load_dotenv(path: str = ".env") -> None:
+    """Load KEY=VALUE pairs from a .env file into os.environ."""
+    p = Path(path)
+    if not p.exists():
+        return
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
 def _expand_env(value: str) -> str:
     """Replace ${VAR} with the value of os.environ['VAR']."""
     return re.sub(r"\$\{([^}]+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
