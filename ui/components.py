@@ -1,22 +1,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 
 import streamlit as st
 
+from agent_poc.agent.instrumentation import TimedToolResult
 from agent_poc.agent.types import ToolResult, ToolSource
 
 TRUNCATE_CHARS = 300
-
-
-@dataclass
-class TimedToolResult:
-    result: ToolResult
-    elapsed_ms: float
-    iteration: int
-    source: ToolSource
-    args: dict = field(default_factory=dict)
 
 
 def _status_icon(result: ToolResult) -> tuple[str, str]:

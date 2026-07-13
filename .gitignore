@@ -29,3 +29,7 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+
+# Benchmark outputs
+*_results.csv
+benchmark_results.csv
