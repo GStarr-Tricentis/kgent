@@ -26,16 +26,68 @@ pip install -e ".[dev,mcp]"
 
 ## Streamlit UI
 
-A web UI that shows tool calls, per-call latency, and token counts after each run.
+A web UI with two tabs: **Chat** and **Benchmark**.
 
 ```bash
 pip install -e ".[ui]"
 streamlit run ui/app.py
 ```
 
+### Chat tab
 - **Left panel (70%)**: chat history and prompt input
 - **Right panel (30%)**: tool call cards with args, output, and elapsed time, plus a run summary (iterations, finish reason, wall time, token counts)
 - Model dropdown populated from `ollama list`
+
+### Benchmark tab
+Upload a queries CSV, select one or more models, set repetitions, and click **Run Benchmark**. Results appear as a table when the run completes, with a **Download CSV** button.
+
+## Benchmark CLI
+
+Run a set of queries across multiple models from the command line:
+
+```bash
+python scripts/benchmark.py \
+  --queries queries.csv \
+  --models qwen3:8b,mistral-small:latest \
+  --output results.csv \
+  --reps 3
+```
+
+Results are flushed to the output CSV after every run, so you can `Ctrl+C` at any point and keep what's been collected so far.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--queries` | required | Path to input CSV |
+| `--models` | required | Comma-separated model names |
+| `--output` | `benchmark_results.csv` | Output CSV path |
+| `--reps` | `3` | Repetitions per query × model |
+| `--config` | `agent_poc/config/config.yaml` | Agent config path |
+
+### Queries CSV format
+
+The input CSV must have these columns:
+
+| Column | Required | Description |
+|---|---|---|
+| `id` | no | Stable identifier; row index used if absent |
+| `use_case` | yes | Category label (e.g. `graph_query`, `file_ops`) |
+| `query` | yes | Prompt text sent to the agent |
+
+Example `queries.csv`:
+
+```csv
+id,use_case,query
+1,graph_query,Which UI modules are invoked by the most reusable step blocks?
+2,graph_query,List all nodes connected to the Entity label
+3,file_ops,Read the contents of README.md and summarize it
+4,reasoning,What tools do you have available?
+```
+
+### Output CSV columns
+
+One row per `query × model × rep`:
+
+`run_id`, `model`, `use_case`, `query_id`, `query`, `rep`, `finish_reason`, `iterations`, `wall_time_s`, `prompt_tokens`, `response_tokens`, `total_tokens`, `num_tool_calls`, `tool_names`, `tool_latencies_ms`, `mean_tool_latency_ms`, `response`, `error`
 
 ## Quick start
 
