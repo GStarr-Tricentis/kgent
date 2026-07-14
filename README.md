@@ -186,6 +186,66 @@ sandbox:
   allow_network: false      # informational (not enforced on macOS)
 ```
 
+## Graph Pipeline
+
+Ingest any structured dataset (CSV, JSON, JSONL, SQLite) into a Neo4j knowledge graph — no code changes required for new data sources. The pipeline uses a local LLM to discover the schema, then extracts nodes and relationships according to a config-driven `DatasetContext`.
+
+### Prerequisites
+
+- Neo4j running locally (or set `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_PASSWORD` in `.env`)
+- Ollama running with a model pulled (default: `qwen3:8b`)
+
+### Ingest a dataset
+
+```bash
+python scripts/ingest.py --file path/to/data.jsonl
+```
+
+On first run the pipeline will:
+1. Sample records and detect structure
+2. Call the LLM to propose node types, relationship types, and structural config
+3. Save a `DatasetContext` YAML to `context/datasets/<dataset-id>.yaml`
+4. Pause for human review of the proposed schema
+5. Extract nodes and relationships
+6. Validate referential integrity (dangling edges are skipped with a warning)
+7. Write to Neo4j
+8. Merge the dataset's types into a shared context for cross-dataset consistency
+
+| Flag | Default | Description |
+|---|---|---|
+| `--file` | required | Path to the data file (CSV, JSON, JSONL, SQLite) |
+| `--dataset-id` | file stem | Identifier for this dataset |
+| `--model` | `qwen3:8b` | Override the LLM used for schema discovery |
+| `--dry-run` | off | Run extraction and validation without writing to Neo4j |
+| `--skip-review` | off | Skip the human review step if canonical names are unchanged |
+| `--sample-size` | `50` | Number of records to sample for schema discovery |
+| `--batch-size` | `500` | Neo4j write batch size |
+| `--config` | `agent_poc/config/config.yaml` | Path to config file |
+
+### Config (`agent_poc/config/config.yaml`)
+
+```yaml
+graph_pipeline:
+  context_dir: context/         # where DatasetContext YAMLs are stored
+  default_sample_size: 50
+  default_batch_size: 500
+  default_model: qwen3:8b
+```
+
+### How it works
+
+The pipeline is fully config-driven via `DatasetContext` (a Pydantic model stored as YAML). Key fields:
+
+- `id_field` / `type_field` — which record fields hold the unique ID and entity type (auto-detected by the LLM)
+- `node_types` — entity labels with canonical Neo4j label mappings
+- `relationship_types` — explicit FK-based edges
+- `implicit_relationships` — edges inferred from matching field values across records
+- `nested_collections` — child objects embedded inside parent records
+- `hierarchy_config` — folder/path fields that generate phantom ancestor nodes
+- `association_config` — structured association arrays (e.g. `[{edgeName, partnerId, direction}]`)
+
+Generated context files (`context/datasets/`, `context/shared_context.yaml`) are gitignored — they are runtime artifacts, not source.
+
 ## Running tests
 
 ```bash

@@ -331,7 +331,7 @@ def validate_proposed_context(ctx: DatasetContext, sample: list[dict]) -> list[s
     """Validate a proposed DatasetContext against the sample. Returns warning strings."""
     warnings: list[str] = []
 
-    sample_type_names = {r.get("typeName") for r in sample if "typeName" in r}
+    sample_type_names = {r.get(ctx.type_field) for r in sample if ctx.type_field in r}
     proposed_canonical_labels = {nt.maps_to for nt in ctx.node_types}
 
     for nt in ctx.node_types:
