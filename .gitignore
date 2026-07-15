@@ -22,6 +22,9 @@ htmlcov/
 .env
 .env.*
 
+# Local config (use config.yaml.example as a template)
+agent_poc/config/config.yaml
+
 # macOS
 .DS_Store
 
