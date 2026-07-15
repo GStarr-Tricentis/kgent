@@ -107,16 +107,6 @@ Override model without editing config:
 python main.py --model qwen3:8b --prompt "hello"
 ```
 
-## Tested models
-
-| Model | Tool use | Notes |
-|---|---|---|
-| qwen2.5:14b | Excellent | Best overall |
-| qwen2.5:7b | Good | Default; use when RAM-limited |
-| llama3.1:8b | Good | Minor formatting quirks |
-| mistral:7b | Fair | Sometimes malforms tool call JSON |
-| codellama:* | Poor | Not recommended |
-
 ## The four demos
 
 ### Demo 1 — File Q&A
