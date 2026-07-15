@@ -22,7 +22,15 @@ pip install -e ".[mcp]"
 
 # Development (includes pytest)
 pip install -e ".[dev,mcp]"
+
+# With Tricentis cloud backend (requires submodule — run after git clone --recurse-submodules)
+uv pip install --override-requires-python ">=3.11" -e "./tricentis-ai-client[openai]"
+pip install -e ".[tricentis]"
 ```
+
+> **Note:** The `tricentis-ai-client` submodule declares `requires-python = ">=3.13"` but runs
+> fine on 3.11. The `--override-requires-python` flag bypasses the metadata check. If you clone
+> without `--recurse-submodules`, run `git submodule update --init` first.
 
 ## Streamlit UI
 

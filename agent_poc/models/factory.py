@@ -15,4 +15,13 @@ def make_backend(
         config.model.model_name = model_override
     if provider == "local":
         return OpenAICompatibleBackend(config.model)
-    raise ValueError(f"Unknown provider: {provider!r}. Valid options: local")
+    if provider == "tricentis":
+        from agent_poc.models.tricentis_backend import TricentisBackend
+        deployment = model_override or config.tricentis.deployment
+        if not deployment:
+            raise ValueError(
+                "Tricentis provider requires a deployment name. "
+                "Set tricentis.deployment in config.yaml or pass --model."
+            )
+        return TricentisBackend(deployment=deployment, temperature=config.model.temperature)
+    raise ValueError(f"Unknown provider: {provider!r}. Valid options: local, tricentis")

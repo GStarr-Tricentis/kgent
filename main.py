@@ -14,7 +14,7 @@ def main() -> None:
     parser.add_argument("--model", default=None, help="Override model_name from config")
     parser.add_argument("--prompt", default=None, help="Single prompt (non-interactive)")
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--provider", default="local", choices=["local"],
+    parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
                         help="Model provider (default: local)")
     args = parser.parse_args()
     from agent_poc.config.loader import load_dotenv

@@ -75,6 +75,10 @@ class GraphPipelineConfig(BaseModel):
     default_model: str = "qwen3:8b"
 
 
+class TricentisConfig(BaseModel):
+    deployment: str = ""  # model deployment name; override with --model flag
+
+
 class AgentPocConfig(BaseModel):
     model: ModelConfig
     agent: AgentCoreConfig
@@ -82,6 +86,7 @@ class AgentPocConfig(BaseModel):
     mcp: MCPConfig = MCPConfig()
     sandbox: SandboxConfig = SandboxConfig()
     graph_pipeline: GraphPipelineConfig = GraphPipelineConfig()
+    tricentis: TricentisConfig = TricentisConfig()
 
 
 def load_config(path: str | Path) -> AgentPocConfig:

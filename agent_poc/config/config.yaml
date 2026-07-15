@@ -25,6 +25,9 @@ mcp:
         NEO4J_URI: "${NEO4J_URI}"
         NEO4J_USERNAME: "${NEO4J_USERNAME}"
         NEO4J_PASSWORD: "${NEO4J_PASSWORD}"
+    - name: tosca-kb
+      command: /Users/g.starr/Downloads/NTwareChroma/mcp-server-venv/bin/python3
+      args: ["/Users/g.starr/Downloads/NTwareChroma/mcp_server.py"]
 
 sandbox:
   timeout_seconds: 15
@@ -36,3 +39,6 @@ graph_pipeline:
   default_sample_size: 50
   default_batch_size: 500
   default_model: qwen3:8b
+
+tricentis:
+  deployment: ""  # set to your deployment name, or pass via --model

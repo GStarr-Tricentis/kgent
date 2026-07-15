@@ -52,7 +52,7 @@ def main() -> None:
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--config", default="agent_poc/config/config.yaml")
-    parser.add_argument("--provider", default="local", choices=["local"],
+    parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
                         help="Model provider (default: local)")
     args = parser.parse_args()
 

@@ -40,3 +40,6 @@ graph_pipeline:
   default_sample_size: 50
   default_batch_size: 500
   default_model: qwen3:8b
+
+tricentis:
+  deployment: ""  # set to your deployment name, or pass via --model

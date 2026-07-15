@@ -52,7 +52,7 @@ def main() -> None:
     parser.add_argument("--output", default="benchmark_results.csv", help="Output CSV path")
     parser.add_argument("--reps", type=int, default=3, help="Repetitions per query×model")
     parser.add_argument("--config", default="agent_poc/config/config.yaml", help="Agent config path")
-    parser.add_argument("--provider", default="local", choices=["local"],
+    parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
                         help="Model provider (default: local)")
     args = parser.parse_args()
 

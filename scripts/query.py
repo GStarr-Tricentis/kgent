@@ -18,7 +18,7 @@ def main() -> None:
     parser.add_argument("--question", required=True, help="Natural language question to answer")
     parser.add_argument("--model", default=None, help="Override model from config")
     parser.add_argument("--config", default="agent_poc/config/config.yaml")
-    parser.add_argument("--provider", default="local", choices=["local"],
+    parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
                         help="Model provider (default: local)")
     args = parser.parse_args()
 

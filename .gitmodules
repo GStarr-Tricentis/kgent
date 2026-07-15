@@ -1,0 +1,3 @@
+[submodule "tricentis-ai-client"]
+	path = tricentis-ai-client
+	url = https://github.com/Tricentis-AI/tricentis-ai-client.git
