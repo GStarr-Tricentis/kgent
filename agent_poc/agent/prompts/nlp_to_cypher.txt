@@ -7,7 +7,7 @@ RULES:
 - Always LIMIT to 1000 when returning rows — never use LIMIT on aggregations like count()
 - Return specific properties: RETURN n.name, n.id — not RETURN n
 - To get a relationship's type, use type(rel) — not rel.type (that is not a property)
-- Always match node names exactly using {name: 'value'} — never use CONTAINS or fuzzy matching unless the question explicitly asks for it; if the exact match returns nothing, return no results
+- EXACT NAME MATCHING ONLY: always use {name: 'value'} for name lookups — never use WHERE n.name CONTAINS, =~, STARTS WITH, or any fuzzy/partial match unless the question explicitly uses words like "like", "similar to", or "contains"; if the exact match returns no rows, return no rows — do not broaden the search
 - To find what a node contains, traverse CONTAINS relationships: (parent)-[:CONTAINS]->(child) — never infer containment from the nodePath string property
 
 SCHEMA:
