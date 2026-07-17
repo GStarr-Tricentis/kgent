@@ -34,9 +34,15 @@ class TrackingBackend:
         self, messages: list[dict], tools: list[RegisteredTool]
     ) -> ModelResponse:
         response = self._backend.complete(messages, tools)
-        if response.raw and hasattr(response.raw, "usage") and response.raw.usage:
-            self._usage.prompt_tokens += response.raw.usage.prompt_tokens or 0
-            self._usage.completion_tokens += response.raw.usage.completion_tokens or 0
+        try:
+            u = response.raw.usage if response.raw else None
+            if u:
+                pt = u.prompt_tokens if hasattr(u, "prompt_tokens") else getattr(u, "input_tokens", 0)
+                ct = u.completion_tokens if hasattr(u, "completion_tokens") else getattr(u, "output_tokens", 0)
+                self._usage.prompt_tokens += pt or 0
+                self._usage.completion_tokens += ct or 0
+        except Exception:
+            pass
         return response
 
 
@@ -99,10 +105,15 @@ def reconstruct_timed_results(state, registry: TimingRegistry) -> list[TimedTool
     return results
 
 
-def build_registry(config: AgentPocConfig, warn_fn=None) -> TimingRegistry:
+def build_registry(
+    config: AgentPocConfig,
+    warn_fn=None,
+    skip_servers: frozenset[str] = frozenset(),
+) -> TimingRegistry:
     """
     Build a TimingRegistry from config. MCP connection errors are passed to
     warn_fn(message) if provided, otherwise logged to stderr.
+    Pass skip_servers=frozenset({"neo4j"}) to omit specific MCP servers.
     """
     from agent_poc.tools.generated import make_save_as_tool
     from agent_poc.tools.mcp_adapter import MCP_AVAILABLE, MCPAdapter
@@ -123,6 +134,8 @@ def build_registry(config: AgentPocConfig, warn_fn=None) -> TimingRegistry:
 
     if MCP_AVAILABLE:
         for srv in config.mcp.servers:
+            if srv.name in skip_servers:
+                continue
             try:
                 adapter = MCPAdapter(srv.name, srv.command, srv.args, srv.expanded_env())
                 adapter.connect()

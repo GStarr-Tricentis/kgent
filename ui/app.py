@@ -22,7 +22,7 @@ from agent_poc.agent.instrumentation import (
 )
 from agent_poc.agent.runner import AgentRunner
 from agent_poc.config.loader import AgentPocConfig
-from agent_poc.models.openai_compatible import OpenAICompatibleBackend
+from agent_poc.models.factory import make_backend
 from ui.components import TimedToolResult, render_run_summary, render_tool_card
 from ui.config import CONFIG_PATH, get_ollama_models
 
@@ -31,11 +31,15 @@ from ui.config import CONFIG_PATH, get_ollama_models
 # ---------------------------------------------------------------------------
 
 CONFIG_YAML_PATH = "agent_poc/config/config.yaml"
-SYSTEM_PROMPT_PATH = Path("agent_poc/prompts/system.txt")
+_PROMPT_DIR = Path("agent_poc/agent/prompts")
 
 
-def _build_registry(config: AgentPocConfig) -> TimingRegistry:
-    return build_registry(config, warn_fn=st.warning)
+def _build_registry(
+    config: AgentPocConfig,
+    skip_neo4j: bool = False,
+) -> TimingRegistry:
+    skip = frozenset({"neo4j"}) if skip_neo4j else frozenset()
+    return build_registry(config, warn_fn=st.warning, skip_servers=skip)
 
 
 def _reconstruct_timed_results(state, registry: TimingRegistry) -> list[TimedToolResult]:
@@ -47,6 +51,17 @@ def _last_assistant_reply(state) -> str:
         if msg.get("role") == "assistant" and msg.get("content"):
             return msg["content"]
     return "[Agent stopped without a text response]"
+
+
+def _system_prompt(cypher_tool_enabled: bool) -> str:
+    base_path = Path("agent_poc/prompts/system.txt")
+    system_prompt = base_path.read_text() if base_path.exists() else ""
+    if cypher_tool_enabled:
+        graph_path = _PROMPT_DIR / "text_to_cypher_tool.txt"
+        if graph_path.exists():
+            graph_prompt = graph_path.read_text()
+            system_prompt = system_prompt + ("\n\n" if system_prompt else "") + graph_prompt
+    return system_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -61,19 +76,25 @@ st.title("Open-weight Agent")
 # ---------------------------------------------------------------------------
 
 if "messages" not in st.session_state:
-    st.session_state.messages = []  # list[dict] — display history
+    st.session_state.messages = []
 if "last_timed" not in st.session_state:
-    st.session_state.last_timed = []  # list[TimedToolResult]
+    st.session_state.last_timed = []
 if "last_run_state" not in st.session_state:
     st.session_state.last_run_state = None
 if "last_usage" not in st.session_state:
-    st.session_state.last_usage = None  # TokenUsage | None
+    st.session_state.last_usage = None
 if "last_elapsed" not in st.session_state:
-    st.session_state.last_elapsed = None  # float | None
+    st.session_state.last_elapsed = None
 if "selected_model" not in st.session_state:
     st.session_state.selected_model = None
 if "benchmark_rows" not in st.session_state:
-    st.session_state.benchmark_rows = []  # list[dict]
+    st.session_state.benchmark_rows = []
+if "provider" not in st.session_state:
+    st.session_state.provider = "local"
+if "tricentis_deployment" not in st.session_state:
+    st.session_state.tricentis_deployment = ""
+if "cypher_tool_enabled" not in st.session_state:
+    st.session_state.cypher_tool_enabled = False
 
 # ---------------------------------------------------------------------------
 # Tabs
@@ -90,18 +111,43 @@ with chat_tab:
     if st.session_state.selected_model not in models:
         st.session_state.selected_model = models[0] if models else ""
 
-    top_cols = st.columns([3, 1])
+    top_cols = st.columns([2, 3, 2, 1])
+
     with top_cols[0]:
-        st.session_state.selected_model = st.selectbox(
-            "Model",
-            options=models,
-            index=models.index(st.session_state.selected_model) if st.session_state.selected_model in models else 0,
+        st.session_state.provider = st.radio(
+            "Provider",
+            ["local", "tricentis"],
+            index=["local", "tricentis"].index(st.session_state.provider),
+            horizontal=True,
             label_visibility="collapsed",
         )
+
     with top_cols[1]:
+        if st.session_state.provider == "local":
+            if st.session_state.selected_model not in models:
+                st.session_state.selected_model = models[0] if models else ""
+            st.session_state.selected_model = st.selectbox(
+                "Model",
+                options=models,
+                index=models.index(st.session_state.selected_model) if st.session_state.selected_model in models else 0,
+                label_visibility="collapsed",
+            )
+        else:
+            st.session_state.tricentis_deployment = st.text_input(
+                "Deployment",
+                value=st.session_state.tricentis_deployment,
+                placeholder="e.g. anthropic.claude-haiku-4-5-20251001-v1:0",
+                label_visibility="collapsed",
+            )
+
+    with top_cols[2]:
+        st.session_state.cypher_tool_enabled = st.checkbox(
+            "Cypher tool", value=st.session_state.cypher_tool_enabled
+        )
+
+    with top_cols[3]:
         if st.session_state.last_run_state is not None:
-            reason = st.session_state.last_run_state.finish_reason
-            st.caption(f"Status: {reason}")
+            st.caption(f"Status: {st.session_state.last_run_state.finish_reason}")
 
     chat_col, tool_col = st.columns([7, 3])
 
@@ -124,15 +170,27 @@ with chat_tab:
             st.session_state.last_elapsed = None
 
             config = load_config(CONFIG_YAML_PATH)
-            config.model.model_name = st.session_state.selected_model
 
-            system_prompt = (
-                SYSTEM_PROMPT_PATH.read_text() if SYSTEM_PROMPT_PATH.exists() else ""
-            )
+            cypher_on = st.session_state.cypher_tool_enabled
+            provider = st.session_state.provider
 
-            registry = _build_registry(config)
+            if provider == "local":
+                model_override = st.session_state.selected_model
+            else:
+                model_override = st.session_state.tricentis_deployment or None
+
+            system_prompt = _system_prompt(cypher_on)
+            registry = _build_registry(config, skip_neo4j=cypher_on)
+
+            if cypher_on:
+                from agent_poc.tools.cypher_tool import make_cypher_tool
+                registry.register(make_cypher_tool(config))
+
             usage = TokenUsage()
-            backend = TrackingBackend(OpenAICompatibleBackend(config.model), usage)
+            backend = TrackingBackend(
+                make_backend(config, provider=provider, model_override=model_override),
+                usage,
+            )
             runner = AgentRunner(
                 backend=backend,
                 registry=registry,
@@ -191,31 +249,57 @@ with benchmark_tab:
     st.subheader("Benchmark")
 
     uploaded = st.file_uploader("Queries CSV", type="csv")
-    bench_models = st.multiselect(
-        "Models",
-        options=get_ollama_models(),
-        default=get_ollama_models()[:1],
-    )
+
+    bench_provider = st.radio("Provider", ["local", "tricentis"], horizontal=True, key="bench_provider")
+
+    if bench_provider == "local":
+        bench_models = st.multiselect(
+            "Models",
+            options=get_ollama_models(),
+            default=get_ollama_models()[:1],
+        )
+        bench_deployment = ""
+    else:
+        bench_models = []
+        bench_deployment = st.text_input(
+            "Tricentis deployment",
+            placeholder="e.g. anthropic.claude-haiku-4-5-20251001-v1:0",
+            key="bench_deployment",
+        )
+
+    bench_cypher_tool = st.checkbox("Cypher tool", key="bench_cypher_tool")
     reps = st.number_input("Repetitions per run", min_value=1, max_value=10, value=3)
 
-    if st.button("Run Benchmark") and uploaded and bench_models:
+    run_ready = uploaded and (bench_models if bench_provider == "local" else bench_deployment)
+
+    if st.button("Run Benchmark") and run_ready:
         queries_df = pd.read_csv(uploaded)
         if "id" not in queries_df.columns:
             queries_df["id"] = range(len(queries_df))
         queries = queries_df.to_dict("records")
 
         config = load_config(CONFIG_YAML_PATH)
-        system_prompt = (
-            SYSTEM_PROMPT_PATH.read_text() if SYSTEM_PROMPT_PATH.exists() else ""
-        )
+        system_prompt = _system_prompt(bench_cypher_tool)
 
         rows: list[dict] = []
         run_id = 0
 
+        # For local: iterate over selected models. For tricentis: single "model" = deployment.
+        model_list = bench_models if bench_provider == "local" else [bench_deployment]
+
         with st.spinner("Running benchmarks…"):
-            for model in bench_models:
-                config.model.model_name = model
-                registry = _build_registry(config)
+            for model in model_list:
+                if bench_provider == "local":
+                    config.model.model_name = model
+                    model_override = model
+                else:
+                    model_override = model  # deployment string
+
+                registry = _build_registry(config, skip_neo4j=bench_cypher_tool)
+
+                if bench_cypher_tool:
+                    from agent_poc.tools.cypher_tool import make_cypher_tool
+                    registry.register(make_cypher_tool(config))
 
                 for row in queries:
                     query_text = row["query"]
@@ -227,7 +311,8 @@ with benchmark_tab:
                         registry.reset()
                         usage = TokenUsage()
                         backend = TrackingBackend(
-                            OpenAICompatibleBackend(config.model), usage
+                            make_backend(config, provider=bench_provider, model_override=model_override),
+                            usage,
                         )
                         runner = AgentRunner(
                             backend=backend,
@@ -265,6 +350,7 @@ with benchmark_tab:
                         rows.append({
                             "run_id": run_id,
                             "model": model,
+                            "provider": bench_provider,
                             "use_case": use_case,
                             "query_id": query_id,
                             "query": query_text,
