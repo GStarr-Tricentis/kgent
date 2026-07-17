@@ -30,7 +30,8 @@ def main() -> None:
     if args.model:
         config.model.model_name = args.model
 
-    prompt_path = Path("agent_poc/agent/prompts/text_to_cypher.txt")
+    prompt_file = "text_to_cypher_tool.txt" if args.cypher_tool else "text_to_cypher.txt"
+    prompt_path = Path("agent_poc/agent/prompts") / prompt_file
     if not prompt_path.exists():
         print(f"ERROR: system prompt not found at {prompt_path}", file=sys.stderr)
         sys.exit(1)
@@ -59,7 +60,6 @@ def main() -> None:
     if args.cypher_tool:
         from agent_poc.tools.cypher_tool import make_cypher_tool
         registry.register(make_cypher_tool(config))
-        system_prompt += "\n\nIMPORTANT: Use the query_graph tool for all questions about the graph. Do not write Cypher directly."
 
     from agent_poc.models.factory import make_backend
     backend = make_backend(config, provider=args.provider, model_override=args.model)
