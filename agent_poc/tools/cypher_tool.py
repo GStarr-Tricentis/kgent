@@ -87,7 +87,7 @@ def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
                 schema_str = _fetch_schema(session)
 
             prompt_template = _PROMPT_PATH.read_text()
-            prompt = prompt_template.format(schema=schema_str, question=question)
+            prompt = prompt_template.replace("{schema}", schema_str).replace("{question}", question)
 
             tool_config = config.model_copy(deep=True)
             raw_model = config.cypher_tool.model
@@ -103,6 +103,9 @@ def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
 
             if not cypher:
                 return "Error: model returned an empty response."
+
+            if re.search(r'\$[a-zA-Z_]\w*', cypher):
+                return f"Error: generated Cypher contains query parameters which are not supported. Generated query was: {cypher}"
 
             with driver.session() as session:
                 result = session.run(cypher)
