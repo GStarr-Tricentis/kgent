@@ -3,6 +3,7 @@ Return ONLY the Cypher query that answers the question — no explanation, no ma
 
 RULES:
 - Use MATCH only — never MERGE or CREATE
+- Only use node labels and relationship types that appear in the SCHEMA below — never invent or guess labels
 - For "how many" questions, always use count() and return a single number — never return rows and let the caller count them
 - Always LIMIT to 1000 when returning rows — never use LIMIT on aggregations like count()
 - Return specific properties: RETURN n.name, n.id — not RETURN n
