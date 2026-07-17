@@ -53,6 +53,21 @@ def _fetch_schema(session) -> str:
     return schema_str
 
 
+def _extract_labels(cypher: str) -> set[str]:
+    """Extract node labels used in a Cypher query."""
+    return set(re.findall(r':([A-Z][A-Za-z0-9_]*)', cypher))
+
+
+def _known_labels(schema_str: str) -> set[str]:
+    """Extract valid labels from the schema string."""
+    labels = set()
+    for line in schema_str.splitlines():
+        # matches lines like:  :`Entity`:`TestCase`: ...  or  :`Project`: ...
+        for m in re.finditer(r'`([A-Za-z][A-Za-z0-9_]*)`', line):
+            labels.add(m.group(1))
+    return labels
+
+
 def _strip_fences(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
@@ -99,11 +114,28 @@ def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
                 provider=config.cypher_tool.provider,
                 model_override=resolved_model,
             )
-            response = backend.complete([{"role": "user", "content": prompt}], tools=[])
+            messages = [{"role": "user", "content": prompt}]
+            response = backend.complete(messages, tools=[])
             cypher = _strip_fences(response.content or "")
 
             if not cypher:
                 return "Error: model returned an empty response."
+
+            # Retry once if the generated Cypher uses labels not in the schema
+            unknown = _extract_labels(cypher) - _known_labels(schema_str)
+            if unknown:
+                print(f"[cypher_tool] unknown labels {unknown}, retrying", flush=True)
+                messages = messages + [
+                    {"role": "assistant", "content": response.content},
+                    {"role": "user", "content": (
+                        f"The query you generated uses label(s) that do not exist in the schema: {', '.join(sorted(unknown))}. "
+                        f"Look at the SCHEMA again and rewrite the query using only the labels listed there."
+                    )},
+                ]
+                response = backend.complete(messages, tools=[])
+                cypher = _strip_fences(response.content or "")
+                if not cypher:
+                    return "Error: model returned an empty response on retry."
 
             if re.search(r'\$[a-zA-Z_]\w*', cypher):
                 return f"Error: generated Cypher contains query parameters which are not supported. Generated query was: {cypher}"
