@@ -34,17 +34,39 @@ class TricentisBackend:
     def __init__(self, deployment: str, temperature: float = 0.0) -> None:
         self._deployment = deployment
         self._temperature = temperature
-        self._is_anthropic = deployment.lower().startswith("anthropic.")
+        self._is_anthropic = "anthropic." in deployment.lower()
         self._client: OpenAI | None = None
         self._anthropic_client = None
         asyncio.run(self._setup())
 
     async def _setup(self) -> None:
+        import sys
         from tricentis_ai_client import TaisClient, TaisConfig
+        from tricentis_ai_client.exceptions import InteractiveAuthRequiredError
 
         config = TaisConfig()
         client = TaisClient(config)
-        await client.authenticate()
+        try:
+            await client.authenticate(interactive=False)
+        except (InteractiveAuthRequiredError, Exception):
+            # No cached token — run the device flow with output on stderr so it
+            # is always visible (in the terminal where `streamlit run` was launched,
+            # as well as in plain CLI usage).
+            print(
+                "\n[TAIS] Authentication required. "
+                "Follow the link below to sign in via SSO:\n",
+                file=sys.stderr,
+                flush=True,
+            )
+            # Temporarily redirect stdout → stderr so the device flow's URL
+            # and user-code prints are visible regardless of how the process
+            # was launched (Streamlit swallows stdout).
+            _real_stdout = sys.stdout
+            sys.stdout = sys.stderr
+            try:
+                await client.authenticate(interactive=True)
+            finally:
+                sys.stdout = _real_stdout
         self._tais_client = client
 
         if self._is_anthropic:

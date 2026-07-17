@@ -33,6 +33,27 @@ from ui.config import CONFIG_PATH, get_ollama_models
 CONFIG_YAML_PATH = "agent_poc/config/config.yaml"
 _PROMPT_DIR = Path("agent_poc/agent/prompts")
 
+TRICENTIS_DEPLOYMENTS = [
+    "us.anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-opus-4-6-v1",
+    "us.anthropic.claude-sonnet-4-20250514-v1:0",
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "us.anthropic.claude-opus-4-5-20251101-v1:0",
+    "gpt-5-2025-08-07",
+    "gpt-5-mini-2025-08-07",
+    "gpt-5-nano-2025-08-07",
+    "gpt-4.1-2025-04-14",
+    "gpt-4.1-mini-2025-04-14",
+    "gpt-4o-2024-11-20",
+    "gpt-4o-2024-08-06",
+    "gpt-4o-2024-05-13",
+    "gpt-4o-mini-2024-07-18",
+    "gpt-4-1106-Preview",
+    "gpt-35-turbo-0613",
+    "gpt-35-turbo-0301",
+]
+
 
 def _build_registry(
     config: AgentPocConfig,
@@ -133,10 +154,12 @@ with chat_tab:
                 label_visibility="collapsed",
             )
         else:
-            st.session_state.tricentis_deployment = st.text_input(
+            if st.session_state.tricentis_deployment not in TRICENTIS_DEPLOYMENTS:
+                st.session_state.tricentis_deployment = TRICENTIS_DEPLOYMENTS[0]
+            st.session_state.tricentis_deployment = st.selectbox(
                 "Deployment",
-                value=st.session_state.tricentis_deployment,
-                placeholder="e.g. anthropic.claude-haiku-4-5-20251001-v1:0",
+                options=TRICENTIS_DEPLOYMENTS,
+                index=TRICENTIS_DEPLOYMENTS.index(st.session_state.tricentis_deployment),
                 label_visibility="collapsed",
             )
 
@@ -261,9 +284,9 @@ with benchmark_tab:
         bench_deployment = ""
     else:
         bench_models = []
-        bench_deployment = st.text_input(
-            "Tricentis deployment",
-            placeholder="e.g. anthropic.claude-haiku-4-5-20251001-v1:0",
+        bench_deployment = st.selectbox(
+            "Deployment",
+            options=TRICENTIS_DEPLOYMENTS,
             key="bench_deployment",
         )
 
