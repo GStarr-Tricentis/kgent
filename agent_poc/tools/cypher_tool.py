@@ -90,7 +90,8 @@ def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
             prompt = prompt_template.format(schema=schema_str, question=question)
 
             tool_config = config.model_copy(deep=True)
-            resolved_model = config.cypher_tool.model or config.model.model_name
+            raw_model = config.cypher_tool.model
+            resolved_model = (raw_model if raw_model and "${" not in raw_model else "") or config.model.model_name
             from agent_poc.models.factory import make_backend
             backend = make_backend(
                 tool_config,
