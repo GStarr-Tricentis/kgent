@@ -6,6 +6,7 @@ RULES:
 - For "how many" questions, always use count() and return a single number — never return rows and let the caller count them
 - Always LIMIT to 1000 when returning rows — never use LIMIT on aggregations like count()
 - Return specific properties: RETURN n.name, n.id — not RETURN n
+- To get a relationship's type, use type(rel) — not rel.type (that is not a property)
 - If no results seem likely, try a broader match before concluding nothing exists
 
 SCHEMA:
