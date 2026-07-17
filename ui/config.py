@@ -21,6 +21,7 @@ def get_ollama_models() -> list[str]:
             parts = line.split()
             if parts:
                 models.append(parts[0])
+        models = [m for m in models if "embed" not in m.lower()]
         if models:
             return models
     except Exception:

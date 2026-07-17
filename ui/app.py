@@ -34,12 +34,12 @@ CONFIG_YAML_PATH = "agent_poc/config/config.yaml"
 _PROMPT_DIR = Path("agent_poc/agent/prompts")
 
 TRICENTIS_DEPLOYMENTS = [
-    "us.anthropic.claude-sonnet-4-6",
-    "us.anthropic.claude-opus-4-6-v1",
-    "us.anthropic.claude-sonnet-4-20250514-v1:0",
-    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "us.anthropic.claude-opus-4-5-20251101-v1:0",
+    "anthropic.claude-sonnet-4-6",
+    "anthropic.claude-opus-4-6-v1",
+    "anthropic.claude-sonnet-4-20250514-v1:0",
+    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "anthropic.claude-haiku-4-5-20251001-v1:0",
+    "anthropic.claude-opus-4-5-20251101-v1:0",
     "gpt-5-2025-08-07",
     "gpt-5-mini-2025-08-07",
     "gpt-5-nano-2025-08-07",
@@ -172,6 +172,13 @@ with chat_tab:
         if st.session_state.last_run_state is not None:
             st.caption(f"Status: {st.session_state.last_run_state.finish_reason}")
 
+    if st.session_state.provider == "tricentis":
+        st.info(
+            "If authentication is required, an SSO link will appear in the terminal "
+            "where you launched Streamlit. Complete sign-in there, then retry your message.",
+            icon="ℹ️",
+        )
+
     chat_col, tool_col = st.columns([7, 3])
 
     with chat_col:
@@ -221,7 +228,12 @@ with chat_tab:
                 system_prompt=system_prompt,
             )
 
-            with st.spinner("Agent is thinking…"):
+            spinner_msg = (
+                "Agent is thinking… (if paused, check terminal for SSO prompt)"
+                if provider == "tricentis"
+                else "Agent is thinking…"
+            )
+            with st.spinner(spinner_msg):
                 t0 = time.perf_counter()
                 state = runner.run(prompt)
                 elapsed = time.perf_counter() - t0
