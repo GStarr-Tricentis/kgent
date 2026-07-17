@@ -79,6 +79,12 @@ class TricentisConfig(BaseModel):
     deployment: str = ""  # model deployment name; override with --model flag
 
 
+class CypherToolConfig(BaseModel):
+    provider: str = "local"
+    model: str = ""  # falls back to model.model_name if empty
+    timeout_seconds: float = 120.0
+
+
 class AgentPocConfig(BaseModel):
     model: ModelConfig
     agent: AgentCoreConfig
@@ -87,6 +93,7 @@ class AgentPocConfig(BaseModel):
     sandbox: SandboxConfig = SandboxConfig()
     graph_pipeline: GraphPipelineConfig = GraphPipelineConfig()
     tricentis: TricentisConfig = TricentisConfig()
+    cypher_tool: CypherToolConfig = CypherToolConfig()
 
 
 def _expand_env_in_raw(obj):

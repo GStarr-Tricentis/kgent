@@ -16,6 +16,8 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
                         help="Model provider (default: local)")
+    parser.add_argument("--cypher-tool", action="store_true",
+                        help="Use query_graph tool instead of raw Neo4j MCP tools")
     args = parser.parse_args()
     from agent_poc.config.loader import load_dotenv
     load_dotenv()
@@ -48,6 +50,8 @@ def main() -> None:
 
     if MCP_AVAILABLE:
         for srv in config.mcp.servers:
+            if args.cypher_tool and srv.name == "neo4j":
+                continue
             try:
                 adapter = MCPAdapter(srv.name, srv.command, srv.args, srv.expanded_env())
                 adapter.connect()
@@ -59,6 +63,12 @@ def main() -> None:
                 print(f"[mcp] {srv.name} failed: {e}", file=sys.stderr)
     elif config.mcp.servers:
         print("[mcp] Warning: mcp package not installed", file=sys.stderr)
+
+    if args.cypher_tool:
+        from agent_poc.tools.cypher_tool import make_cypher_tool
+        registry.register(make_cypher_tool(config))
+        graph_prompt = Path("agent_poc/agent/prompts/text_to_cypher_tool.txt").read_text()
+        system_prompt = system_prompt + ("\n\n" if system_prompt else "") + graph_prompt
 
     from agent_poc.models.factory import make_backend
     runner = AgentRunner(backend=make_backend(config, provider=args.provider, model_override=args.model),

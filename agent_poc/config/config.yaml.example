@@ -43,3 +43,8 @@ graph_pipeline:
 
 tricentis:
   deployment: "${TAIS_LLM_DEPLOYMENT}"  # set TAIS_LLM_DEPLOYMENT in .env, or pass via --model
+
+cypher_tool:
+  provider: local
+  model: "${CYPHER_MODEL}"  # e.g. qwen2.5-coder:7b; falls back to model.model_name if unset
+  timeout_seconds: 120
