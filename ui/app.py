@@ -60,11 +60,15 @@ TRICENTIS_DEPLOYMENTS = [
 ]
 
 
+_GRAPH_MODES = ["neo4j_mcp", "cypher_tool", "none"]
+_GRAPH_MODE_LABELS = ["Neo4j MCP", "Cypher tool", "No graph"]
+
+
 def _build_registry(
     config: AgentPocConfig,
-    skip_neo4j: bool = False,
+    graph_mode: str = "neo4j_mcp",
 ) -> TimingRegistry:
-    skip = frozenset({"neo4j"}) if skip_neo4j else frozenset()
+    skip = frozenset({"neo4j"}) if graph_mode in ("cypher_tool", "none") else frozenset()
     return build_registry(config, warn_fn=st.warning, skip_servers=skip)
 
 
@@ -79,10 +83,10 @@ def _last_assistant_reply(state) -> str:
     return "[Agent stopped without a text response]"
 
 
-def _system_prompt(cypher_tool_enabled: bool) -> str:
+def _system_prompt(graph_mode: str) -> str:
     base_path = Path("agent_poc/prompts/system.txt")
     system_prompt = base_path.read_text() if base_path.exists() else ""
-    if cypher_tool_enabled:
+    if graph_mode == "cypher_tool":
         graph_path = _PROMPT_DIR / "text_to_cypher_tool.txt"
         if graph_path.exists():
             graph_prompt = graph_path.read_text()
@@ -121,8 +125,8 @@ if "tricentis_deployment" not in st.session_state:
     st.session_state.tricentis_deployment = ""
 if "bedrock_model_id" not in st.session_state:
     st.session_state.bedrock_model_id = BEDROCK_MODEL_IDS[0]
-if "cypher_tool_enabled" not in st.session_state:
-    st.session_state.cypher_tool_enabled = False
+if "graph_mode" not in st.session_state:
+    st.session_state.graph_mode = "neo4j_mcp"
 
 # ---------------------------------------------------------------------------
 # Tabs
@@ -178,8 +182,12 @@ with chat_tab:
             )
 
     with top_cols[2]:
-        st.session_state.cypher_tool_enabled = st.checkbox(
-            "Cypher tool", value=st.session_state.cypher_tool_enabled
+        st.session_state.graph_mode = st.radio(
+            "Graph mode",
+            options=_GRAPH_MODES,
+            format_func=lambda m: _GRAPH_MODE_LABELS[_GRAPH_MODES.index(m)],
+            index=_GRAPH_MODES.index(st.session_state.graph_mode),
+            horizontal=True,
         )
 
     with top_cols[3]:
@@ -221,7 +229,7 @@ with chat_tab:
 
             config = load_config(CONFIG_YAML_PATH)
 
-            cypher_on = st.session_state.cypher_tool_enabled
+            graph_mode = st.session_state.graph_mode
             provider = st.session_state.provider
 
             if provider == "local":
@@ -231,10 +239,10 @@ with chat_tab:
             else:  # bedrock
                 model_override = st.session_state.bedrock_model_id
 
-            system_prompt = _system_prompt(cypher_on)
-            registry = _build_registry(config, skip_neo4j=cypher_on)
+            system_prompt = _system_prompt(graph_mode)
+            registry = _build_registry(config, graph_mode=graph_mode)
 
-            if cypher_on:
+            if graph_mode == "cypher_tool":
                 from agent_poc.tools.cypher_tool import make_cypher_tool
                 registry.register(make_cypher_tool(config))
 
@@ -334,7 +342,13 @@ with benchmark_tab:
             key="bench_bedrock_model",
         )
 
-    bench_cypher_tool = st.checkbox("Cypher tool", key="bench_cypher_tool")
+    bench_graph_mode = st.radio(
+        "Graph mode",
+        options=_GRAPH_MODES,
+        format_func=lambda m: _GRAPH_MODE_LABELS[_GRAPH_MODES.index(m)],
+        horizontal=True,
+        key="bench_graph_mode",
+    )
     reps = st.number_input("Repetitions per run", min_value=1, max_value=10, value=3)
 
     run_ready = uploaded and (bench_models if bench_provider == "local" else (bench_deployment or bench_bedrock_model))
@@ -346,7 +360,7 @@ with benchmark_tab:
         queries = queries_df.to_dict("records")
 
         config = load_config(CONFIG_YAML_PATH)
-        system_prompt = _system_prompt(bench_cypher_tool)
+        system_prompt = _system_prompt(bench_graph_mode)
 
         rows: list[dict] = []
         run_id = 0
@@ -367,9 +381,9 @@ with benchmark_tab:
                 else:
                     model_override = model  # deployment or bedrock model id
 
-                registry = _build_registry(config, skip_neo4j=bench_cypher_tool)
+                registry = _build_registry(config, graph_mode=bench_graph_mode)
 
-                if bench_cypher_tool:
+                if bench_graph_mode == "cypher_tool":
                     from agent_poc.tools.cypher_tool import make_cypher_tool
                     registry.register(make_cypher_tool(config))
 
@@ -423,6 +437,7 @@ with benchmark_tab:
                             "run_id": run_id,
                             "model": model,
                             "provider": bench_provider,
+                            "graph_mode": bench_graph_mode,
                             "use_case": use_case,
                             "query_id": query_id,
                             "query": query_text,

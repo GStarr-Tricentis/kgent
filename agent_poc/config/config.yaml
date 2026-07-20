@@ -47,6 +47,8 @@ cypher_tool:
   provider: local
   model: "${CYPHER_MODEL}"  # e.g. qwen2.5-coder:7b; falls back to model.model_name if unset
   timeout_seconds: 120
+  schema_ttl_seconds: 300
+  schema_budget: 1900
 
 bedrock:
   region: "${AWS_REGION}"

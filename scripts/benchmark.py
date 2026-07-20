@@ -22,6 +22,7 @@ SYSTEM_PROMPT_PATH = Path("agent_poc/prompts/system.txt")
 
 OUTPUT_FIELDS = [
     "run_id", "model", "use_case", "query_id", "query", "rep",
+    "graph_mode",
     "finish_reason", "iterations", "wall_time_s",
     "prompt_tokens", "response_tokens", "total_tokens",
     "num_tool_calls", "tool_names", "tool_latencies_ms", "mean_tool_latency_ms",
@@ -64,6 +65,8 @@ def main() -> None:
                         help="Model provider (default: local)")
     parser.add_argument("--cypher-tool", action="store_true",
                         help="Enable the NLP-to-Cypher tool (disables the neo4j MCP server)")
+    parser.add_argument("--no-graph", action="store_true",
+                        help="Disable all graph access (no Neo4j MCP, no Cypher tool) for a straight-RAG baseline")
     args = parser.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
@@ -74,6 +77,17 @@ def main() -> None:
         graph_path = Path("agent_poc/agent/prompts/text_to_cypher_tool.txt")
         if graph_path.exists():
             system_prompt = system_prompt + ("\n\n" if system_prompt else "") + graph_path.read_text()
+
+    if args.no_graph and args.cypher_tool:
+        parser.error("--no-graph and --cypher-tool are mutually exclusive")
+
+    if args.no_graph:
+        graph_mode = "none"
+    elif args.cypher_tool:
+        graph_mode = "cypher_tool"
+    else:
+        graph_mode = "neo4j_mcp"
+
     total_runs = len(models) * len(queries) * args.reps
 
     output_path = Path(args.output)
@@ -84,9 +98,14 @@ def main() -> None:
         run_id = 0
         for model in models:
             config.model.model_name = model
-            skip = frozenset({"neo4j"}) if args.cypher_tool else frozenset()
+            if graph_mode == "none":
+                skip = frozenset({"neo4j"})
+            elif graph_mode == "cypher_tool":
+                skip = frozenset({"neo4j"})
+            else:
+                skip = frozenset()
             registry = build_registry(config, skip_servers=skip)
-            if args.cypher_tool:
+            if graph_mode == "cypher_tool":
                 from agent_poc.tools.cypher_tool import make_cypher_tool
                 registry.register(make_cypher_tool(config))
 
@@ -137,6 +156,7 @@ def main() -> None:
                         "run_id": run_id,
                         "model": model,
                         "use_case": use_case,
+                        "graph_mode": graph_mode,
                         "query_id": query_id,
                         "query": query_text,
                         "rep": rep,

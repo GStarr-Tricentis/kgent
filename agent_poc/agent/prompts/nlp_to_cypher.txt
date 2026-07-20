@@ -5,14 +5,15 @@ RULES:
 - Use MATCH only — never MERGE or CREATE
 - Only use node labels and relationship types that appear in the SCHEMA below — never invent or guess labels
 - For "how many" questions, always use count() and return a single number — never return rows and let the caller count them
-- If you use ORDER BY with an aggregation like count(), you must include that aggregation in the RETURN clause first
+- CRITICAL: If you use ORDER BY with an aggregation like count(), you MUST include that exact aggregation expression in the RETURN clause — e.g. RETURN n.name, count(m) AS cnt ORDER BY cnt DESC
+- ALWAYS use undirected relationship syntax: (a)-[:TYPE]-(b) — never use arrows like -> or <-
 - Always LIMIT to 1000 when returning rows — never use LIMIT on aggregations like count()
 - Return specific properties: RETURN n.name, n.id — not RETURN n
 - Always use RETURN DISTINCT when the query uses variable-length paths like [:CONTAINS*] to avoid duplicate rows
 - To get a relationship's type, use type(rel) — not rel.type (that is not a property)
-- EXACT NAME MATCHING ONLY: always use {name: 'value'} for name lookups — never use WHERE n.name CONTAINS, =~, STARTS WITH, or any fuzzy/partial match unless the question explicitly uses words like "like", "similar to", or "contains"; if the exact match returns no rows, return no rows — do not broaden the search
+- For name lookups, match the phrasing of the question exactly: if the question says "named X" or "called X", use WHERE n.name = 'X'; if the question says "contains X", "includes X", "like X", or "starts with X", use the corresponding Cypher operator (CONTAINS, STARTS WITH, etc.); never broaden an exact match on your own if no rows are returned
 - Never use query parameters ($name, $value, etc.) — always inline values as string literals directly in the query
-- To find what a node contains, traverse CONTAINS relationships: (parent)-[:CONTAINS]->(child) — never infer containment from the nodePath string property
+- To find what a node contains, traverse structural relationships (e.g. CONTAINS, HAS, INCLUDES) — never infer structure from string properties like paths or names
 
 SCHEMA:
 {schema}

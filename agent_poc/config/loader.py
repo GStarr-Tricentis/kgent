@@ -88,6 +88,8 @@ class CypherToolConfig(BaseModel):
     provider: str = "local"
     model: str = ""  # falls back to model.model_name if empty
     timeout_seconds: float = 120.0
+    schema_ttl_seconds: float = 300.0
+    schema_budget: int = 1900
 
 
 class AgentPocConfig(BaseModel):
