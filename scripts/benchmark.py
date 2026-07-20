@@ -25,7 +25,7 @@ OUTPUT_FIELDS = [
     "finish_reason", "iterations", "wall_time_s",
     "prompt_tokens", "response_tokens", "total_tokens",
     "num_tool_calls", "tool_names", "tool_latencies_ms", "mean_tool_latency_ms",
-    "response", "error",
+    "response", "error", "provider",
 ]
 
 
@@ -48,20 +48,32 @@ def _read_queries(path: Path) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark open-weight agent across models and queries")
     parser.add_argument("--queries", required=True, help="Path to input CSV")
-    parser.add_argument("--models", required=True, help="Comma-separated model names")
+    parser.add_argument(
+        "--models", required=True,
+        help=(
+            "Comma-separated model names. For 'local' these are Ollama model tags "
+            "(e.g. qwen3:8b). For 'tricentis' these are deployment names "
+            "(e.g. anthropic.claude-sonnet-4-6). For 'bedrock' these are model IDs "
+            "(e.g. qwen.qwen3-coder-next)."
+        ),
+    )
     parser.add_argument("--output", default="benchmark_results.csv", help="Output CSV path")
     parser.add_argument("--reps", type=int, default=3, help="Repetitions per query×model")
     parser.add_argument("--config", default="agent_poc/config/config.yaml", help="Agent config path")
-    parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
+    parser.add_argument("--provider", default="local", choices=["local", "tricentis", "bedrock"],
                         help="Model provider (default: local)")
+    parser.add_argument("--cypher-tool", action="store_true",
+                        help="Enable the NLP-to-Cypher tool (disables the neo4j MCP server)")
     args = parser.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     queries = _read_queries(Path(args.queries))
     config = load_config(args.config)
-    system_prompt = (
-        SYSTEM_PROMPT_PATH.read_text() if SYSTEM_PROMPT_PATH.exists() else ""
-    )
+    system_prompt = SYSTEM_PROMPT_PATH.read_text() if SYSTEM_PROMPT_PATH.exists() else ""
+    if args.cypher_tool:
+        graph_path = Path("agent_poc/agent/prompts/text_to_cypher_tool.txt")
+        if graph_path.exists():
+            system_prompt = system_prompt + ("\n\n" if system_prompt else "") + graph_path.read_text()
     total_runs = len(models) * len(queries) * args.reps
 
     output_path = Path(args.output)
@@ -72,7 +84,11 @@ def main() -> None:
         run_id = 0
         for model in models:
             config.model.model_name = model
-            registry = build_registry(config)
+            skip = frozenset({"neo4j"}) if args.cypher_tool else frozenset()
+            registry = build_registry(config, skip_servers=skip)
+            if args.cypher_tool:
+                from agent_poc.tools.cypher_tool import make_cypher_tool
+                registry.register(make_cypher_tool(config))
 
             for row in queries:
                 query_text = row["query"]
@@ -136,6 +152,7 @@ def main() -> None:
                         "mean_tool_latency_ms": round(mean_latency, 1) if mean_latency != "" else "",
                         "response": _last_assistant_reply(state) if state else "",
                         "error": "true" if error else "false",
+                        "provider": args.provider,
                     })
                     out_f.flush()
 
