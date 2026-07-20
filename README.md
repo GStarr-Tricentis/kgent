@@ -36,7 +36,7 @@ pip install -e ".[dev,mcp]"
 
 # With Tricentis cloud backend
 git submodule update --init                                              # pull tricentis-ai-client
-uv pip install --override-requires-python ">=3.11" -e "./tricentis-ai-client[openai]"
+uv pip install --override-requires-python ">=3.11" -e "./tricentis-ai-client[openai,anthropic]"
 pip install -e ".[tricentis]"
 
 # With AWS Bedrock backend

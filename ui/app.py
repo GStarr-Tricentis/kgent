@@ -426,7 +426,7 @@ with benchmark_tab:
                         mean_latency = (
                             sum(tool_latencies) / len(tool_latencies)
                             if tool_latencies
-                            else ""
+                            else None
                         )
 
                         pt = usage.prompt_tokens or ""
@@ -451,7 +451,7 @@ with benchmark_tab:
                             "num_tool_calls": len(registry.timed_results),
                             "tool_names": ";".join(tool_names),
                             "tool_latencies_ms": ";".join(f"{l:.1f}" for l in tool_latencies),
-                            "mean_tool_latency_ms": round(mean_latency, 1) if mean_latency != "" else "",
+                            "mean_tool_latency_ms": round(mean_latency, 1) if mean_latency is not None else None,
                             "response": _last_assistant_reply(state) if state else "",
                             "error": "true" if error else "false",
                         })
