@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -42,7 +43,7 @@ def _diff_canonical_names(existing, proposed) -> list[str]:
     return lines
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest a dataset into the Neo4j knowledge graph")
     parser.add_argument("--file", required=True, help="Path to the data file to ingest")
     parser.add_argument("--dataset-id", default=None, help="Dataset identifier (default: file stem)")
@@ -64,7 +65,7 @@ def main() -> None:
     file_path = args.file
     dataset_id = args.dataset_id or Path(file_path).stem
     from agent_poc.models.factory import make_backend
-    backend = make_backend(config, provider=args.provider, model_override=args.model)
+    backend = await make_backend(config, provider=args.provider, model_override=args.model)
     sample_size = args.sample_size or gp.default_sample_size
     batch_size = args.batch_size or gp.default_batch_size
 
@@ -107,7 +108,7 @@ def main() -> None:
     # -------------------------------------------------------------------------
     _step(3, TOTAL_STEPS, "Proposing dataset context...")
     from graph_pipeline.schema_discovery import propose_dataset_context, validate_proposed_context
-    proposed_ctx = propose_dataset_context(
+    proposed_ctx = await propose_dataset_context(
         sample=sample,
         shared_context=shared_ctx,
         backend=backend,
@@ -166,7 +167,7 @@ def main() -> None:
     # -------------------------------------------------------------------------
     _step(5, TOTAL_STEPS, "Extracting nodes and relationships...")
     from graph_pipeline.extractor import extract_all
-    nodes, rels = extract_all(records, dataset_ctx, shared_ctx, backend=backend)
+    nodes, rels = await extract_all(records, dataset_ctx, shared_ctx, backend=backend)
     _indent(f"{len(nodes)} nodes, {len(rels)} relationships")
 
     # -------------------------------------------------------------------------
@@ -287,4 +288,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

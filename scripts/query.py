@@ -7,13 +7,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="Query the Neo4j knowledge graph in natural language")
     parser.add_argument("--question", required=True, help="Natural language question to answer")
     parser.add_argument("--model", default=None, help="Override model from config")
@@ -37,44 +38,31 @@ def main() -> None:
         sys.exit(1)
     system_prompt = prompt_path.read_text()
 
-    from agent_poc.tools.registry import ToolRegistry
-    from agent_poc.tools.mcp_adapter import MCP_AVAILABLE, MCPAdapter
+    from agent_poc.agent.instrumentation import build_registry
     from agent_poc.agent.runner import AgentRunner
-
-    registry = ToolRegistry()
-
-    if MCP_AVAILABLE:
-        for srv in config.mcp.servers:
-            if args.cypher_tool and srv.name == "neo4j":
-                continue
-            try:
-                adapter = MCPAdapter(srv.name, srv.command, srv.args, srv.expanded_env())
-                adapter.connect()
-                for tool in adapter.list_tools():
-                    registry.register(tool)
-            except Exception as e:
-                print(f"[mcp] {srv.name} failed to connect: {e}", file=sys.stderr)
-    elif config.mcp.servers:
-        print("[mcp] Warning: mcp package not installed — Neo4j tools unavailable", file=sys.stderr)
-
-    if args.cypher_tool:
-        from agent_poc.tools.cypher_tool import make_cypher_tool
-        registry.register(make_cypher_tool(config))
-
     from agent_poc.models.factory import make_backend
-    backend = make_backend(config, provider=args.provider, model_override=args.model)
-    runner = AgentRunner(backend=backend, registry=registry, config=config, system_prompt=system_prompt)
-    state = runner.run(args.question)
 
-    last_content = next(
-        (m["content"] for m in reversed(state.messages) if m.get("role") == "assistant" and m.get("content")),
-        None,
-    )
-    if last_content:
-        print(last_content)
-    else:
-        print(f"(Agent finished with reason: {state.finish_reason})")
+    skip_servers = frozenset({"neo4j"}) if args.cypher_tool else frozenset()
+    registry = await build_registry(config, skip_servers=skip_servers)
+
+    async with registry:
+        if args.cypher_tool:
+            from agent_poc.tools.cypher_tool import make_cypher_tool
+            registry.register(await make_cypher_tool(config))
+
+        backend = await make_backend(config, provider=args.provider, model_override=args.model)
+        runner = AgentRunner(backend=backend, registry=registry, config=config, system_prompt=system_prompt)
+        state = await runner.run(args.question)
+
+        last_content = next(
+            (m["content"] for m in reversed(state.messages) if m.get("role") == "assistant" and m.get("content")),
+            None,
+        )
+        if last_content:
+            print(last_content)
+        else:
+            print(f"(Agent finished with reason: {state.finish_reason})")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

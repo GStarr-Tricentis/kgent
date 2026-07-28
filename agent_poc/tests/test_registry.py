@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import time
+import asyncio
 
 import pytest
 
@@ -25,79 +25,121 @@ def _call(name: str, args: dict = {}, call_id: str = "tc1") -> ToolCall:
 
 # --- unknown tool ---
 
-def test_unknown_tool():
+async def test_unknown_tool():
     r = ToolRegistry()
-    result = r.execute(_call("ghost"))
+    result = await r.execute(_call("ghost"))
     assert result.error is True
     assert "ghost" in result.output
 
 
-def test_unknown_tool_lists_available():
+async def test_unknown_tool_lists_available():
     r = ToolRegistry()
     r.register(_tool("real_tool", lambda args: "ok"))
-    result = r.execute(_call("ghost"))
+    result = await r.execute(_call("ghost"))
     assert "real_tool" in result.output
 
 
 # --- successful execution ---
 
-def test_successful_execution():
+async def test_successful_execution():
     r = ToolRegistry()
     r.register(_tool("greet", lambda args: "hello"))
-    result = r.execute(_call("greet"))
+    result = await r.execute(_call("greet"))
     assert result.output == "hello"
     assert result.error is False
     assert result.tool_call_id == "tc1"
     assert result.name == "greet"
 
 
-def test_successful_execution_passes_args():
+async def test_successful_execution_passes_args():
     r = ToolRegistry()
     r.register(_tool("echo", lambda args: args.get("text", "")))
-    result = r.execute(_call("echo", {"text": "world"}))
+    result = await r.execute(_call("echo", {"text": "world"}))
     assert result.output == "world"
+
+
+async def test_async_callable_is_dispatched_directly():
+    """Async tool callables bypass asyncio.to_thread and are awaited directly."""
+    r = ToolRegistry()
+
+    async def _async_greet(args):
+        return "async hello"
+
+    r.register(_tool("async_greet", _async_greet))
+    result = await r.execute(_call("async_greet"))
+    assert result.output == "async hello"
+    assert result.error is False
 
 
 # --- timeout ---
 
-def test_timeout():
+async def test_timeout():
     r = ToolRegistry()
-    r.register(_tool("slow", lambda args: time.sleep(60), timeout=0.1))
-    result = r.execute(_call("slow"))
+
+    async def _slow(args):
+        await asyncio.sleep(60)
+
+    r.register(_tool("slow", _slow, timeout=0.1))
+    result = await r.execute(_call("slow"))
     assert result.error is True
     assert "timeout" in result.output.lower() or "timed out" in result.output.lower()
 
 
-def test_timeout_does_not_raise():
+async def test_timeout_does_not_raise():
     r = ToolRegistry()
-    r.register(_tool("slow", lambda args: time.sleep(60), timeout=0.1))
-    # Must not raise — execute() always returns ToolResult
-    result = r.execute(_call("slow"))
+
+    async def _slow(args):
+        await asyncio.sleep(60)
+
+    r.register(_tool("slow", _slow, timeout=0.1))
+    result = await r.execute(_call("slow"))
     assert isinstance(result.output, str)
 
 
 # --- exception in callable ---
 
-def test_exception_in_callable():
+async def test_exception_in_callable():
     r = ToolRegistry()
     r.register(_tool("bad", lambda args: (_ for _ in ()).throw(RuntimeError("boom"))))
-    result = r.execute(_call("bad"))
+    result = await r.execute(_call("bad"))
     assert result.error is True
     assert "boom" in result.output
 
 
-def test_exception_in_callable_does_not_raise():
+async def test_exception_in_callable_does_not_raise():
     r = ToolRegistry()
     r.register(_tool("bad", lambda args: 1 / 0))
-    result = r.execute(_call("bad"))
+    result = await r.execute(_call("bad"))
     assert result.error is True
 
 
 # --- timeout_override ---
 
-def test_timeout_override_shortens_timeout():
+async def test_timeout_override_shortens_timeout():
     r = ToolRegistry()
-    r.register(_tool("slow", lambda args: time.sleep(60), timeout=30.0))
-    result = r.execute(_call("slow"), timeout_override=0.1)
+
+    async def _slow(args):
+        await asyncio.sleep(60)
+
+    r.register(_tool("slow", _slow, timeout=30.0))
+    result = await r.execute(_call("slow"), timeout_override=0.1)
     assert result.error is True
     assert "timeout" in result.output.lower() or "timed out" in result.output.lower()
+
+
+# --- adapter lifecycle ---
+
+async def test_context_manager_disconnects_adapters_on_exit():
+    from unittest.mock import AsyncMock
+
+    r = ToolRegistry()
+    adapter1 = AsyncMock()
+    adapter2 = AsyncMock()
+    r.register_adapter(adapter1)
+    r.register_adapter(adapter2)
+
+    async with r:
+        pass
+
+    adapter1.disconnect.assert_awaited_once()
+    adapter2.disconnect.assert_awaited_once()

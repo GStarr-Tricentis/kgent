@@ -46,6 +46,9 @@ tricentis:
 cypher_tool:
   provider: local
   model: "${CYPHER_MODEL}"  # e.g. qwen2.5-coder:7b; falls back to model.model_name if unset
+  base_url: "${CYPHER_BASE_URL}"   # overrides model.base_url when set
+  api_key: "${CYPHER_API_KEY}"     # overrides model.api_key when set
+  prompt_template: "${CYPHER_PROMPT}"  # path to prompt file; falls back to nlp_to_cypher.txt if empty
   timeout_seconds: 120
   schema_ttl_seconds: 300
   schema_budget: 1900

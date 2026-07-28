@@ -18,10 +18,6 @@ dependencies = [
 mcp = [
     "mcp>=1.0",
 ]
-ui = [
-    "streamlit>=1.35",
-    "pandas>=2.0",
-]
 tricentis = [
     "tricentis-ai-client @ ./tricentis-ai-client",
     "anthropic>=0.40",
@@ -33,6 +29,7 @@ bedrock = [
 dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.0",
+    "pytest-asyncio>=0.23",
 ]
 
 [project.scripts]
@@ -46,8 +43,8 @@ packages = ["agent_poc", "graph_pipeline"]
 
 [tool.pytest.ini_options]
 testpaths = ["agent_poc/tests", "tests"]
+asyncio_mode = "auto"
 markers = [
-    "integration: requires a running Ollama instance",
-    "llm: requires a live LLM (pass --llm to enable)",
     "integration: requires live external services like Neo4j (pass --integration to enable)",
+    "llm: requires a live LLM (pass --llm to enable)",
 ]

@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent_poc.agent.types import ToolResult
@@ -14,7 +11,7 @@ class RunState(BaseModel):
     messages: list[dict] = Field(default_factory=list)
     iteration: int = 0
     execution_history: list[ToolResult] = Field(default_factory=list)
-    recent_calls: Any = Field(default_factory=lambda: deque(maxlen=10))
+    last_batch: list | None = None
     finished: bool = False
     finish_reason: str = ""
 

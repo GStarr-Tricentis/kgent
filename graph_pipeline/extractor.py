@@ -134,7 +134,7 @@ def _build_hierarchy_structures(
 # Rule 7: LLM-assisted extraction for ambiguous fields
 # ---------------------------------------------------------------------------
 
-def _llm_extract_ambiguous(
+async def _llm_extract_ambiguous(
     records: list[dict],
     dataset_ctx: DatasetContext,
     type_map: dict[str, str],
@@ -165,7 +165,7 @@ def _llm_extract_ambiguous(
 
         raw = ""
         try:
-            response = backend.complete(messages=[{"role": "user", "content": prompt}], tools=[])
+            response = await backend.complete(messages=[{"role": "user", "content": prompt}], tools=[])
             raw = response.content or ""
             text = raw.strip()
             if text.startswith("```"):
@@ -207,7 +207,7 @@ def _llm_extract_ambiguous(
 # Public API
 # ---------------------------------------------------------------------------
 
-def extract_all(
+async def extract_all(
     records: list[dict],
     dataset_ctx: DatasetContext,
     shared_ctx: SharedContext | None,
@@ -369,7 +369,7 @@ def extract_all(
 
     # ----- Rule 7: LLM-assisted extraction for ambiguous fields --------------
     if dataset_ctx.ambiguous_fields and backend is not None:
-        llm_nodes, llm_rels = _llm_extract_ambiguous(
+        llm_nodes, llm_rels = await _llm_extract_ambiguous(
             records, dataset_ctx, type_map, backend
         )
         all_nodes.extend(llm_nodes)

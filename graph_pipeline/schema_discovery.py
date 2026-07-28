@@ -95,7 +95,7 @@ def _extract_json_values(text: str) -> list:
     return values
 
 
-def _llm_call(
+async def _llm_call(
     backend: ModelBackend,
     messages: list[dict],
     max_retries: int,
@@ -111,7 +111,7 @@ def _llm_call(
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
         try:
-            response = backend.complete(
+            response = await backend.complete(
                 messages=messages,
                 tools=[],
                 response_format=response_format,
@@ -133,7 +133,7 @@ def _llm_call(
 # Call 1: node types
 # ---------------------------------------------------------------------------
 
-def _propose_node_types(
+async def _propose_node_types(
     sample: list[dict],
     shared_context: SharedContext,
     backend: ModelBackend,
@@ -150,7 +150,7 @@ def _propose_node_types(
     messages: list[dict] = [{"role": "user", "content": prompt}]
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
-        raw = _llm_call(
+        raw = await _llm_call(
             backend, messages, max_retries=1,
             label=f"node_types attempt {attempt}",
             response_format=_NODE_TYPES_FORMAT,
@@ -182,7 +182,7 @@ def _propose_node_types(
 # Call 2: relationship types
 # ---------------------------------------------------------------------------
 
-def _propose_relationship_types(
+async def _propose_relationship_types(
     sample: list[dict],
     node_types: list[DatasetNodeType],
     backend: ModelBackend,
@@ -216,7 +216,7 @@ def _propose_relationship_types(
     messages: list[dict] = [{"role": "user", "content": prompt}]
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
-        raw = _llm_call(
+        raw = await _llm_call(
             backend, messages, max_retries=1,
             label=f"rel_types attempt {attempt}",
             response_format=_REL_TYPES_FORMAT,
@@ -259,7 +259,7 @@ def _propose_relationship_types(
 # Call 3: ambiguous fields
 # ---------------------------------------------------------------------------
 
-def _propose_ambiguous_fields(
+async def _propose_ambiguous_fields(
     sample: list[dict],
     backend: ModelBackend,
     max_retries: int,
@@ -274,7 +274,7 @@ def _propose_ambiguous_fields(
     messages: list[dict] = [{"role": "user", "content": prompt}]
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
-        raw = _llm_call(
+        raw = await _llm_call(
             backend, messages, max_retries=1,
             label=f"ambiguous_fields attempt {attempt}",
             response_format=_AMBIGUOUS_FORMAT,
@@ -307,7 +307,7 @@ def _propose_ambiguous_fields(
 # Public API
 # ---------------------------------------------------------------------------
 
-def propose_dataset_context(
+async def propose_dataset_context(
     sample: list[dict],
     shared_context: SharedContext,
     backend: ModelBackend,
@@ -321,11 +321,11 @@ def propose_dataset_context(
     """
     import datetime
 
-    node_types, structural_config = _propose_node_types(sample, shared_context, backend, max_retries)
-    rel_types, implicit_rels, assoc_config_dict = _propose_relationship_types(
+    node_types, structural_config = await _propose_node_types(sample, shared_context, backend, max_retries)
+    rel_types, implicit_rels, assoc_config_dict = await _propose_relationship_types(
         sample, node_types, backend, max_retries
     )
-    ambiguous_fields = _propose_ambiguous_fields(sample, backend, max_retries)
+    ambiguous_fields = await _propose_ambiguous_fields(sample, backend, max_retries)
 
     # hierarchy_config
     hierarchy_config: HierarchyConfig | None = None

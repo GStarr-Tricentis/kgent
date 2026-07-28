@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 
 import openai
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from agent_poc.agent.types import ModelResponse, RegisteredTool, ToolCall
 
@@ -35,12 +36,18 @@ class TricentisBackend:
         self._deployment = deployment
         self._temperature = temperature
         self._is_anthropic = "anthropic." in deployment.lower()
-        self._client: OpenAI | None = None
-        self._anthropic_client = None
-        asyncio.run(self._setup())
+        self._client: AsyncOpenAI | None = None
+        self._async_anthropic_client = None
+        self._tais_client = None
+        self._auth_lock = asyncio.Lock()
 
-    async def _setup(self) -> None:
-        import sys
+    @classmethod
+    async def create(cls, deployment: str, temperature: float = 0.0) -> "TricentisBackend":
+        instance = cls(deployment, temperature)
+        await instance.setup()
+        return instance
+
+    async def setup(self) -> None:
         from tricentis_ai_client import TaisClient, TaisConfig
         from tricentis_ai_client.exceptions import InteractiveAuthRequiredError
 
@@ -49,18 +56,12 @@ class TricentisBackend:
         try:
             await client.authenticate(interactive=False)
         except (InteractiveAuthRequiredError, Exception):
-            # No cached token — run the device flow with output on stderr so it
-            # is always visible (in the terminal where `streamlit run` was launched,
-            # as well as in plain CLI usage).
             print(
                 "\n[TAIS] Authentication required. "
                 "Follow the link below to sign in via SSO:\n",
                 file=sys.stderr,
                 flush=True,
             )
-            # Temporarily redirect stdout → stderr so the device flow's URL
-            # and user-code prints are visible regardless of how the process
-            # was launched (Streamlit swallows stdout).
             _real_stdout = sys.stdout
             sys.stdout = sys.stderr
             try:
@@ -68,17 +69,16 @@ class TricentisBackend:
             finally:
                 sys.stdout = _real_stdout
         self._tais_client = client
+        self._tais_config = config
 
         if self._is_anthropic:
-            # create_anthropic_client wires PAYG session ID automatically
             self._async_anthropic_client = client.create_anthropic_client(
                 model=self._deployment,
             )
         else:
-            token = client.token_provider.get_valid_token()
-            self._client = OpenAI(
+            self._client = AsyncOpenAI(
                 base_url=f"{config.gateway_url}/api/v1/hub-service/openai/deployments/{self._deployment}",
-                api_key=token,
+                api_key=self._fresh_token(),
                 default_headers={
                     "x-product-name": config.product_name,
                     "x-tenant-name": config.tenant_name,
@@ -88,23 +88,22 @@ class TricentisBackend:
     def _fresh_token(self) -> str:
         return self._tais_client.token_provider.get_valid_token()
 
-    def complete(
+    async def complete(
         self,
         messages: list[dict],
         tools: list[RegisteredTool],
         response_format: dict | None = None,
     ) -> ModelResponse:
         if self._is_anthropic:
-            return self._complete_anthropic(messages, tools)
-        return self._complete_openai(messages, tools)
+            return await self._complete_anthropic(messages, tools)
+        return await self._complete_openai(messages, tools)
 
-    def _complete_anthropic(
+    async def _complete_anthropic(
         self,
         messages: list[dict],
         tools: list[RegisteredTool],
         response_format: dict | None = None,
     ) -> ModelResponse:
-        import asyncio
         import anthropic
 
         system_text = ""
@@ -142,17 +141,15 @@ class TricentisBackend:
             for t in tools
         ]
 
-        async def _call():
-            return await self._async_anthropic_client.messages.create(
-                model=self._deployment,
-                messages=anthropic_messages,
-                tools=anthropic_tools if anthropic_tools else anthropic.NOT_GIVEN,
-                system=system_text if system_text else anthropic.NOT_GIVEN,
-                max_tokens=4096,
-                temperature=self._temperature,
-            )
-
-        response = asyncio.run(_call())
+        response = await self._async_anthropic_client.messages.create(
+            model=self._deployment,
+            messages=anthropic_messages,
+            tools=anthropic_tools if anthropic_tools else anthropic.NOT_GIVEN,
+            system=system_text if system_text else anthropic.NOT_GIVEN,
+            max_tokens=8192,
+            temperature=self._temperature,
+            timeout=60.0,
+        )
 
         text_content = next(
             (b.text for b in response.content if b.type == "text"), None
@@ -186,35 +183,46 @@ class TricentisBackend:
             assistant_message=assistant_message,
         )
 
-    def _reauthenticate(self) -> None:
-        # Force re-auth: clear cached token so ensure_authenticated doesn't skip the flow
-        store = getattr(self._tais_client.token_provider, "_store", None)
-        if store is not None:
-            store.clear()
-        asyncio.run(self._tais_client.authenticate())
-        self._client.api_key = self._fresh_token()
+    async def _reauthenticate(self) -> None:
+        async with self._auth_lock:
+            await self._tais_client.authenticate(interactive=False)
+            self._client = AsyncOpenAI(
+                base_url=f"{self._tais_config.gateway_url}/api/v1/hub-service/openai/deployments/{self._deployment}",
+                api_key=self._fresh_token(),
+                default_headers={
+                    "x-product-name": self._tais_config.product_name,
+                    "x-tenant-name": self._tais_config.tenant_name,
+                },
+            )
 
-    def _complete_openai(
+    async def _complete_openai(
         self,
         messages: list[dict],
         tools: list[RegisteredTool],
         response_format: dict | None = None,
     ) -> ModelResponse:
-        self._client.api_key = self._fresh_token()
+        self._client = AsyncOpenAI(
+            base_url=f"{self._tais_config.gateway_url}/api/v1/hub-service/openai/deployments/{self._deployment}",
+            api_key=self._fresh_token(),
+            default_headers={
+                "x-product-name": self._tais_config.product_name,
+                "x-tenant-name": self._tais_config.tenant_name,
+            },
+        )
 
         tool_payload = _tools_payload(tools)
         tools_param = tool_payload if tool_payload else openai.NOT_GIVEN
 
         try:
-            response = self._client.chat.completions.create(
+            response = await self._client.chat.completions.create(
                 model=self._deployment,
                 messages=messages,
                 tools=tools_param,
                 temperature=self._temperature,
             )
         except (openai.AuthenticationError, openai.PermissionDeniedError):
-            self._reauthenticate()
-            response = self._client.chat.completions.create(
+            await self._reauthenticate()
+            response = await self._client.chat.completions.create(
                 model=self._deployment,
                 messages=messages,
                 tools=tools_param,

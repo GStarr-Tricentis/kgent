@@ -49,6 +49,7 @@ class MCPServerConfig(BaseModel):
     command: str
     args: list[str] = []
     env: dict[str, str] = {}
+    max_calls_before_reconnect: int | None = 100
 
     def expanded_env(self) -> dict[str, str]:
         return _expand_env_in_dict(self.env)
@@ -87,6 +88,9 @@ class BedrockConfig(BaseModel):
 class CypherToolConfig(BaseModel):
     provider: str = "local"
     model: str = ""  # falls back to model.model_name if empty
+    base_url: str = ""  # overrides model.base_url when set
+    api_key: str = ""   # overrides model.api_key when set
+    prompt_template: str = ""  # path to prompt file; falls back to nlp_to_cypher.txt if empty
     timeout_seconds: float = 120.0
     schema_ttl_seconds: float = 300.0
     schema_budget: int = 1900

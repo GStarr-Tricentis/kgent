@@ -1,0 +1,4 @@
+Given the following graph schema:
+{schema}
+
+Generate a Cypher query to answer the following question: {question}

@@ -13,7 +13,7 @@ class MockBackend:
         self._responses = list(responses)
         self.call_count = 0
 
-    def complete(self, messages: list[dict], tools: list, response_format: dict | None = None) -> ModelResponse:
+    async def complete(self, messages: list[dict], tools: list, response_format: dict | None = None) -> ModelResponse:
         self.call_count += 1
         if not self._responses:
             raise RuntimeError("MockBackend exhausted — add more responses")
