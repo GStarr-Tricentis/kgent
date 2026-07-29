@@ -18,7 +18,7 @@ class MockBackend:
     def __init__(self, response_content: str):
         self._content = response_content
 
-    def complete(self, messages, tools, response_format=None):
+    async def complete(self, messages, tools, response_format=None):
         from agent_poc.agent.types import ModelResponse
         return ModelResponse(
             content=self._content,
@@ -183,7 +183,7 @@ class TestProposeDatasetContext:
     def _ambiguous_response(self):
         return json.dumps({"fields": []})
 
-    def test_returns_dataset_context(self):
+    async def test_returns_dataset_context(self):
         from graph_pipeline.context_store import DatasetContext, SharedContext
         from graph_pipeline.schema_discovery import propose_dataset_context
 
@@ -192,7 +192,7 @@ class TestProposeDatasetContext:
         call_count = [0]
 
         class MultiMockBackend:
-            def complete(self, messages, tools, response_format=None):
+            async def complete(self, messages, tools, response_format=None):
                 from agent_poc.agent.types import ModelResponse
                 content = responses[call_count[0]]
                 call_count[0] += 1
@@ -204,7 +204,7 @@ class TestProposeDatasetContext:
                     raw=None,
                 )
 
-        result = propose_dataset_context(
+        result = await propose_dataset_context(
             sample=SAMPLE,
             shared_context=SharedContext(),
             backend=MultiMockBackend(),
@@ -213,7 +213,7 @@ class TestProposeDatasetContext:
         assert isinstance(result.node_types, list)
         assert isinstance(result.relationship_types, list)
 
-    def test_node_types_parsed(self):
+    async def test_node_types_parsed(self):
         from graph_pipeline.context_store import SharedContext
         from graph_pipeline.schema_discovery import propose_dataset_context
 
@@ -221,7 +221,7 @@ class TestProposeDatasetContext:
         call_count = [0]
 
         class MultiMockBackend:
-            def complete(self, messages, tools, response_format=None):
+            async def complete(self, messages, tools, response_format=None):
                 from agent_poc.agent.types import ModelResponse
                 content = responses[call_count[0]]
                 call_count[0] += 1
@@ -233,7 +233,7 @@ class TestProposeDatasetContext:
                     raw=None,
                 )
 
-        result = propose_dataset_context(
+        result = await propose_dataset_context(
             sample=SAMPLE,
             shared_context=SharedContext(),
             backend=MultiMockBackend(),
@@ -242,7 +242,7 @@ class TestProposeDatasetContext:
         assert "TestCase" in names
         assert "XModule" in names
 
-    def test_relationship_types_parsed(self):
+    async def test_relationship_types_parsed(self):
         from graph_pipeline.context_store import SharedContext
         from graph_pipeline.schema_discovery import propose_dataset_context
 
@@ -250,7 +250,7 @@ class TestProposeDatasetContext:
         call_count = [0]
 
         class MultiMockBackend:
-            def complete(self, messages, tools, response_format=None):
+            async def complete(self, messages, tools, response_format=None):
                 from agent_poc.agent.types import ModelResponse
                 content = responses[call_count[0]]
                 call_count[0] += 1
@@ -262,7 +262,7 @@ class TestProposeDatasetContext:
                     raw=None,
                 )
 
-        result = propose_dataset_context(
+        result = await propose_dataset_context(
             sample=SAMPLE,
             shared_context=SharedContext(),
             backend=MultiMockBackend(),
@@ -272,7 +272,7 @@ class TestProposeDatasetContext:
 
 
 @pytest.mark.llm
-def test_propose_dataset_context_returns_valid_result():
+async def test_propose_dataset_context_returns_valid_result():
     """Call a real model and assert the result is a structurally valid DatasetContext."""
     from graph_pipeline.context_store import DatasetContext, SharedContext
     from graph_pipeline.schema_discovery import propose_dataset_context

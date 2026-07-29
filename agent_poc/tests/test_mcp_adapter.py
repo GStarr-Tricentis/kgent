@@ -1,52 +1,14 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 
-# --- import guard ---
+# ── test helpers ──────────────────────────────────────────────────────────────
 
-def test_import_does_not_raise():
-    """Module must load regardless of whether mcp is installed."""
-    from agent_poc.tools.mcp_adapter import MCPAdapter, MCP_AVAILABLE  # noqa: F401
-    assert isinstance(MCP_AVAILABLE, bool)
-
-
-def test_mcp_unavailable_connect_is_noop():
-    """When MCP_AVAILABLE=False, connect() silently does nothing."""
-    import agent_poc.tools.mcp_adapter as mod
-    from agent_poc.tools.mcp_adapter import MCPAdapter
-
-    original = mod.MCP_AVAILABLE
-    try:
-        mod.MCP_AVAILABLE = False
-        adapter = MCPAdapter("srv", "cmd", [])
-        adapter.connect()  # must not raise
-        assert adapter.list_tools() == []
-    finally:
-        mod.MCP_AVAILABLE = original
-
-
-def test_mcp_unavailable_call_tool_returns_error_string():
-    """When MCP_AVAILABLE=False, call_tool() returns an error string, not an exception."""
-    import agent_poc.tools.mcp_adapter as mod
-    from agent_poc.tools.mcp_adapter import MCPAdapter
-
-    original = mod.MCP_AVAILABLE
-    try:
-        mod.MCP_AVAILABLE = False
-        adapter = MCPAdapter("srv", "cmd", [])
-        result = adapter.call_tool("any_tool", {})
-        assert isinstance(result, str)
-        assert "not installed" in result.lower() or "error" in result.lower()
-    finally:
-        mod.MCP_AVAILABLE = original
-
-
-# --- lambda capture ---
-
-def _make_fake_mcp_tool(name: str) -> MagicMock:
+def _mcp_tool(name: str) -> MagicMock:
     t = MagicMock()
     t.name = name
     t.description = f"Tool {name}"
@@ -54,72 +16,268 @@ def _make_fake_mcp_tool(name: str) -> MagicMock:
     return t
 
 
-def _connect_with_fake_tools(names: list[str]):
-    """Run connect() with asyncio.run mocked to return fake MCP tool objects."""
-    import asyncio
+def _make_session(tools: list, call_results: list | None = None) -> AsyncMock:
+    """Build a mock MCP ClientSession.
+
+    call_results: list of strings (success) or Exception instances (raised).
+    """
+    session = AsyncMock()
+    session.initialize = AsyncMock()
+    session.list_tools = AsyncMock(return_value=MagicMock(tools=tools))
+    if call_results is not None:
+        side_effects = [
+            r if isinstance(r, Exception) else MagicMock(content=r)
+            for r in call_results
+        ]
+        session.call_tool = AsyncMock(side_effect=side_effects)
+    return session
+
+
+def _mcp_patches(session: AsyncMock):
+    """Return a pair of patch context managers for stdio_client and ClientSession.
+
+    Using @asynccontextmanager wrappers ensures AsyncExitStack.enter_async_context()
+    sees proper async __aenter__/__aexit__ on the type, not just the instance.
+    """
+    @asynccontextmanager
+    async def _fake_stdio(params):
+        yield (MagicMock(), MagicMock())
+
+    @asynccontextmanager
+    async def _fake_cs(read, write):
+        yield session
+
+    return (
+        patch("agent_poc.tools.mcp_adapter.stdio_client", _fake_stdio),
+        patch("agent_poc.tools.mcp_adapter.ClientSession", _fake_cs),
+    )
+
+
+# ── import guard ──────────────────────────────────────────────────────────────
+
+def test_import_does_not_raise():
+    from agent_poc.tools.mcp_adapter import MCPAdapter, MCP_AVAILABLE  # noqa: F401
+    assert isinstance(MCP_AVAILABLE, bool)
+
+
+# ── MCP_AVAILABLE = False ─────────────────────────────────────────────────────
+
+async def test_mcp_unavailable_connect_is_noop():
+    import agent_poc.tools.mcp_adapter as mod
     from agent_poc.tools.mcp_adapter import MCPAdapter
-
-    fake_tools = [_make_fake_mcp_tool(n) for n in names]
-
-    def _fake_run(coro):
-        # Close the coroutine to suppress "never awaited" warnings.
-        coro.close()
-        return fake_tools
-
-    with patch("asyncio.run", side_effect=_fake_run):
-        adapter = MCPAdapter("test_srv", "fake_cmd", [])
-        adapter.connect()
-    return adapter
+    original = mod.MCP_AVAILABLE
+    try:
+        mod.MCP_AVAILABLE = False
+        adapter = MCPAdapter("srv", "cmd", [])
+        await adapter.connect()
+        assert adapter.list_tools() == []
+    finally:
+        mod.MCP_AVAILABLE = original
 
 
-def test_tool_registration_count():
-    adapter = _connect_with_fake_tools(["alpha", "beta", "gamma"])
+async def test_mcp_unavailable_call_tool_returns_error_string():
+    import agent_poc.tools.mcp_adapter as mod
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    original = mod.MCP_AVAILABLE
+    try:
+        mod.MCP_AVAILABLE = False
+        adapter = MCPAdapter("srv", "cmd", [])
+        result = await adapter.call_tool("any_tool", {})
+        assert isinstance(result, str)
+        assert "not installed" in result.lower() or "error" in result.lower()
+    finally:
+        mod.MCP_AVAILABLE = original
+
+
+# ── connect() ─────────────────────────────────────────────────────────────────
+
+async def test_connect_populates_tools_correctly():
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    tools = [_mcp_tool("alpha"), _mcp_tool("beta"), _mcp_tool("gamma")]
+    session = _make_session(tools)
+    sc, cs = _mcp_patches(session)
+    with sc, cs:
+        adapter = MCPAdapter("test", "cmd", [])
+        await adapter.connect()
     assert len(adapter.list_tools()) == 3
+    assert {t.name for t in adapter.list_tools()} == {"alpha", "beta", "gamma"}
 
 
-def test_tool_registration_names():
-    adapter = _connect_with_fake_tools(["alpha", "beta", "gamma"])
-    names = {t.name for t in adapter.list_tools()}
-    assert names == {"alpha", "beta", "gamma"}
-
-
-def test_tool_registration_source_is_mcp():
+async def test_connect_sets_tool_source_to_mcp():
     from agent_poc.agent.types import ToolSource
-    adapter = _connect_with_fake_tools(["tool_x"])
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    session = _make_session([_mcp_tool("t1")])
+    sc, cs = _mcp_patches(session)
+    with sc, cs:
+        adapter = MCPAdapter("test", "cmd", [])
+        await adapter.connect()
     assert adapter.list_tools()[0].source == ToolSource.MCP
 
 
-def test_tool_registration_lambda_capture():
-    """Each callable must be bound to its own tool name — not the last one in the loop."""
-    adapter = _connect_with_fake_tools(["alpha", "beta", "gamma"])
-    tools = adapter.list_tools()
+async def test_connect_raises_on_empty_tool_list():
+    """RuntimeError when server returns no tools."""
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    session = _make_session([])
+    sc, cs = _mcp_patches(session)
+    with sc, cs:
+        adapter = MCPAdapter("test", "cmd", [])
+        with pytest.raises(RuntimeError, match="no tools"):
+            await adapter.connect()
 
-    called = []
-    with patch.object(adapter, "call_tool", side_effect=lambda name, args: called.append(name) or "ok"):
-        for tool in tools:
-            tool.callable({})
 
-    # Every registered tool must have called with its own name
+# ── call_tool() ───────────────────────────────────────────────────────────────
+
+async def test_call_tool_returns_expected_string():
+    """call_tool() returns str(result.content)."""
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    session = _make_session([_mcp_tool("greet")], call_results=["hello world"])
+    sc, cs = _mcp_patches(session)
+    with sc, cs:
+        adapter = MCPAdapter("test", "cmd", [])
+        await adapter.connect()
+        result = await adapter.call_tool("greet", {"name": "Alice"})
+    assert result == "hello world"
+
+
+async def test_call_tool_raises_on_broken_pipe():
+    """BrokenPipeError propagates out of call_tool(); _mcp_loop owns reconnection."""
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    session = _make_session(
+        [_mcp_tool("t1")],
+        call_results=[BrokenPipeError("pipe broke")],
+    )
+    sc, cs = _mcp_patches(session)
+    with sc, cs:
+        adapter = MCPAdapter("test", "cmd", [])
+        await adapter.connect()
+        with pytest.raises(BrokenPipeError, match="pipe broke"):
+            await adapter.call_tool("t1", {})
+    assert adapter._call_count == 0
+
+
+async def test_call_tool_does_not_reconnect_on_non_transport_error():
+    """ValueError from a tool propagates without triggering a reconnect."""
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    session = _make_session([_mcp_tool("t1")])
+    session.call_tool = AsyncMock(side_effect=ValueError("bad input"))
+    sc, cs = _mcp_patches(session)
+    with sc, cs:
+        adapter = MCPAdapter("test", "cmd", [])
+        await adapter.connect()
+        with pytest.raises(ValueError, match="bad input"):
+            await adapter.call_tool("t1", {})
+    # initialize() called exactly once (initial connect); no reconnect fired
+    assert session.initialize.call_count == 1
+
+
+# ── async callable capture ────────────────────────────────────────────────────
+
+async def test_tool_callables_are_bound_to_correct_names():
+    """Each registered async callable must invoke call_tool with its own tool name."""
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    tools = [_mcp_tool("alpha"), _mcp_tool("beta"), _mcp_tool("gamma")]
+    session = _make_session(tools)
+    sc, cs = _mcp_patches(session)
+
+    called: list[str] = []
+
+    with sc, cs:
+        adapter = MCPAdapter("test", "cmd", [])
+        await adapter.connect()
+
+        async def _tracking(name, args):
+            called.append(name)
+            return "ok"
+
+        adapter.call_tool = _tracking
+        for tool in adapter.list_tools():
+            await tool.callable({})
+
     assert sorted(called) == ["alpha", "beta", "gamma"]
-    # No name should appear more than once (confirms no shared closure variable)
-    assert len(set(called)) == 3
+    assert len(set(called)) == 3  # no closure variable aliasing
 
 
-def test_tool_registration_lambda_capture_single_name():
-    """Regression: a single tool must still call with the correct name."""
-    adapter = _connect_with_fake_tools(["only_tool"])
-    tools = adapter.list_tools()
+# ── disconnect / context manager ──────────────────────────────────────────────
 
-    called = []
-    with patch.object(adapter, "call_tool", side_effect=lambda name, args: called.append(name) or "ok"):
-        tools[0].callable({})
-
-    assert called == ["only_tool"]
-
-
-# --- disconnect ---
-
-def test_disconnect_does_not_raise():
+async def test_disconnect_before_connect_does_not_raise():
     from agent_poc.tools.mcp_adapter import MCPAdapter
     adapter = MCPAdapter("srv", "cmd", [])
-    adapter.disconnect()  # reconnect-per-call; must be a no-op
+    await adapter.disconnect()  # _tg is None — must be a no-op
+
+
+async def test_context_manager_cleans_up_on_exit():
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    session = _make_session([_mcp_tool("t1")])
+    sc, cs = _mcp_patches(session)
+    with sc, cs:
+        async with MCPAdapter("test", "cmd", []) as adapter:
+            assert len(adapter.list_tools()) == 1
+    assert adapter._session is None
+    assert adapter._tg is None
+
+
+# ── Fix 2: max_calls wiring ───────────────────────────────────────────────────
+
+async def test_mcp_adapter_accepts_max_calls_constructor_param():
+    """MCPAdapter.__init__ must accept a max_calls kwarg and store it as _max_calls."""
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    adapter = MCPAdapter("srv", "cmd", [], max_calls=50)
+    assert adapter._max_calls == 50
+
+
+async def test_proactive_reconnect_fires_at_max_calls():
+    """When _call_count reaches _max_calls, reconnect fires before the next call."""
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    session = _make_session([_mcp_tool("t1")], call_results=["a", "b"])
+    sc, cs = _mcp_patches(session)
+    with sc, cs:
+        adapter = MCPAdapter("test", "cmd", [], max_calls=1)
+        await adapter.connect()
+        r1 = await adapter.call_tool("t1", {})
+        # _call_count is now 1 == max_calls; next call must trigger proactive reconnect
+        r2 = await adapter.call_tool("t1", {})
+
+    assert r1 == "a"
+    assert r2 == "b"
+    # initialize() called twice: initial connect + after proactive reconnect
+    assert session.initialize.call_count == 2
+
+
+async def test_build_registry_wires_max_calls_from_config():
+    """build_registry must forward max_calls_before_reconnect from config to MCPAdapter."""
+    from agent_poc.agent.instrumentation import build_registry
+    from agent_poc.config.loader import (
+        AgentCoreConfig, AgentPocConfig, MCPConfig, MCPServerConfig,
+        ModelConfig, ToolsConfig,
+    )
+
+    config = AgentPocConfig(
+        model=ModelConfig(provider="local", base_url="http://x", api_key="x", model_name="m"),
+        agent=AgentCoreConfig(),
+        tools=ToolsConfig(static=[]),
+        mcp=MCPConfig(servers=[
+            MCPServerConfig(name="srv", command="cmd", args=[], max_calls_before_reconnect=77)
+        ]),
+    )
+
+    captured: list[dict] = []
+
+    class _FakeAdapter:
+        def __init__(self, name, cmd, args, env, max_calls=None):
+            captured.append({"name": name, "max_calls": max_calls})
+            self._tools: list = []
+
+        async def connect(self):
+            pass
+
+        def list_tools(self):
+            return []
+
+    with (
+        patch("agent_poc.tools.mcp_adapter.MCP_AVAILABLE", True),
+        patch("agent_poc.tools.mcp_adapter.MCPAdapter", _FakeAdapter),
+    ):
+        await build_registry(config)
+
+    assert len(captured) == 1
+    assert captured[0]["max_calls"] == 77

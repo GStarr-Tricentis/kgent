@@ -47,7 +47,7 @@ class ModelResponse(BaseModel):
 
 
 class ModelBackend(Protocol):
-    def complete(
+    async def complete(
         self,
         messages: list[dict],
         tools: list[RegisteredTool],

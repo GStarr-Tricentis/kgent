@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from agent_poc.agent.types import ModelResponse, RegisteredTool, ToolCall
@@ -13,7 +14,7 @@ class BedrockBackend:
         self._model_id = model_id
         self._temperature = temperature
 
-    def complete(
+    async def complete(
         self,
         messages: list[dict],
         tools: list[RegisteredTool],
@@ -103,7 +104,7 @@ class BedrockBackend:
         if tool_config:
             kwargs["toolConfig"] = tool_config
 
-        response = self._client.converse(**kwargs)
+        response = await asyncio.to_thread(self._client.converse, **kwargs)
 
         # Parse response
         stop_reason = response.get("stopReason", "end_turn")

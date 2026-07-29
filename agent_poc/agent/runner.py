@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from collections import deque
 
 from agent_poc.agent.state import RunState
 from agent_poc.agent.types import ModelBackend, ToolResult
@@ -25,10 +25,8 @@ class AgentRunner:
         self._config = config
         self._system_prompt = system_prompt
 
-    def run(self, user_input: str) -> RunState:
-        window = self._config.agent.repeated_call_window
+    async def run(self, user_input: str) -> RunState:
         state = RunState()
-        state.recent_calls = deque(maxlen=window)
 
         if self._system_prompt:
             state.messages.append({"role": "system", "content": self._system_prompt})
@@ -37,7 +35,7 @@ class AgentRunner:
         while state.iteration < self._config.agent.max_iterations:
             logger.debug("Iteration %d", state.iteration)
 
-            response = self._backend.complete(state.messages, self._registry.list_tools())
+            response = await self._backend.complete(state.messages, self._registry.list_tools())
 
             state.messages.append(response.assistant_message)
 
@@ -52,24 +50,33 @@ class AgentRunner:
                 state.iteration += 1
                 break
 
-            for tool_call in response.tool_calls:
-                call_key = (tool_call.name, json.dumps(tool_call.arguments, sort_keys=True))
+            current_batch = [
+                (tc.name, json.dumps(tc.arguments, sort_keys=True))
+                for tc in response.tool_calls
+            ]
 
-                recent = list(state.recent_calls)
-                if len(recent) >= window and len(set(recent[-(window - 1):])) == 1 and recent[-(window - 1)] == call_key:
-                    result = ToolResult(
-                        tool_call_id=tool_call.id,
-                        name=tool_call.name,
+            if current_batch == state.last_batch:
+                results: list[ToolResult] = [
+                    ToolResult(
+                        tool_call_id=tc.id,
+                        name=tc.name,
                         output=(
-                            f"Repeated identical tool call detected for '{tool_call.name}'. "
+                            f"Repeated identical tool call detected for '{tc.name}'. "
                             "Try a different approach."
                         ),
                         error=True,
                     )
-                else:
-                    result = self._registry.execute(tool_call)
+                    for tc in response.tool_calls
+                ]
+            else:
+                state.last_batch = current_batch
+                results = list(
+                    await asyncio.gather(
+                        *[self._registry.execute(tc) for tc in response.tool_calls]
+                    )
+                )
 
-                state.recent_calls.append(call_key)
+            for result in results:
                 state.execution_history.append(result)
                 state.messages.append({
                     "role": "tool",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import openai
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from agent_poc.agent.types import ModelResponse, RegisteredTool, ToolCall
 from agent_poc.config.loader import ModelConfig
@@ -32,11 +32,11 @@ def _parse_arguments(raw: str) -> dict:
 
 class OpenAICompatibleBackend:
     def __init__(self, config: ModelConfig) -> None:
-        self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+        self._client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key)
         self._model = config.model_name
         self._temperature = config.temperature
 
-    def complete(
+    async def complete(
         self,
         messages: list[dict],
         tools: list[RegisteredTool],
@@ -45,7 +45,7 @@ class OpenAICompatibleBackend:
         tool_payload = _tools_payload(tools)
         tools_param = tool_payload if tool_payload else openai.NOT_GIVEN
 
-        response = self._client.chat.completions.create(
+        response = await self._client.chat.completions.create(
             model=self._model,
             messages=messages,
             tools=tools_param,

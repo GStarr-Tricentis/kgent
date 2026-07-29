@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import logging
-import sys
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from agent_poc.agent.types import ModelBackend, ModelResponse, RegisteredTool, ToolCall, ToolResult, ToolSource
 from agent_poc.config.loader import AgentPocConfig
@@ -30,10 +28,13 @@ class TrackingBackend:
         self._backend = backend
         self._usage = usage
 
-    def complete(
-        self, messages: list[dict], tools: list[RegisteredTool]
+    async def complete(
+        self,
+        messages: list[dict],
+        tools: list[RegisteredTool],
+        response_format: dict | None = None,
     ) -> ModelResponse:
-        response = self._backend.complete(messages, tools)
+        response = await self._backend.complete(messages, tools, response_format)
         try:
             u = response.raw.usage if response.raw else None
             if u:
@@ -57,9 +58,9 @@ class TimingRegistry(ToolRegistry):
         """Clear timed_results so the registry can be reused across benchmark runs."""
         self.timed_results = []
 
-    def execute(self, call: ToolCall, timeout_override: float | None = None) -> ToolResult:
+    async def execute(self, call: ToolCall, timeout_override: float | None = None) -> ToolResult:
         start = time.perf_counter()
-        result = super().execute(call, timeout_override)
+        result = await super().execute(call, timeout_override)
         elapsed_ms = (time.perf_counter() - start) * 1000
         self.timed_results.append((result, elapsed_ms, call.arguments))
         return result
@@ -105,16 +106,10 @@ def reconstruct_timed_results(state, registry: TimingRegistry) -> list[TimedTool
     return results
 
 
-def build_registry(
+async def build_registry(
     config: AgentPocConfig,
-    warn_fn=None,
     skip_servers: frozenset[str] = frozenset(),
 ) -> TimingRegistry:
-    """
-    Build a TimingRegistry from config. MCP connection errors are passed to
-    warn_fn(message) if provided, otherwise logged to stderr.
-    Pass skip_servers=frozenset({"neo4j"}) to omit specific MCP servers.
-    """
     from agent_poc.tools.generated import make_save_as_tool
     from agent_poc.tools.mcp_adapter import MCP_AVAILABLE, MCPAdapter
     from agent_poc.tools.static.filesystem import LIST_DIR_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL
@@ -136,16 +131,13 @@ def build_registry(
         for srv in config.mcp.servers:
             if srv.name in skip_servers:
                 continue
-            try:
-                adapter = MCPAdapter(srv.name, srv.command, srv.args, srv.expanded_env())
-                adapter.connect()
-                for t in adapter.list_tools():
-                    registry.register(t)
-            except Exception as exc:
-                msg = f"[mcp] {srv.name} failed: {exc}"
-                if warn_fn is not None:
-                    warn_fn(msg)
-                else:
-                    print(msg, file=sys.stderr)
+            adapter = MCPAdapter(
+                srv.name, srv.command, srv.args, srv.expanded_env(),
+                max_calls=srv.max_calls_before_reconnect,
+            )
+            await adapter.connect()
+            registry.register_adapter(adapter)
+            for t in adapter.list_tools():
+                registry.register(t)
 
     return registry

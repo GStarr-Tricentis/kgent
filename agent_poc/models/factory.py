@@ -5,7 +5,7 @@ from agent_poc.config.loader import AgentPocConfig
 from agent_poc.models.openai_compatible import OpenAICompatibleBackend
 
 
-def make_backend(
+async def make_backend(
     config: AgentPocConfig,
     provider: str | None = None,
     model_override: str | None = None,
@@ -23,7 +23,7 @@ def make_backend(
                 "Tricentis provider requires a deployment name. "
                 "Set tricentis.deployment in config.yaml or pass --model."
             )
-        return TricentisBackend(deployment=deployment, temperature=config.model.temperature)
+        return await TricentisBackend.create(deployment=deployment, temperature=config.model.temperature)
     if provider == "bedrock":
         from agent_poc.models.bedrock_backend import BedrockBackend
         model_id = model_override or config.bedrock.model_id

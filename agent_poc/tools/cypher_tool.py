@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
@@ -19,9 +20,6 @@ _CYPHER_NOISE_RE = re.compile(
     re.DOTALL,
 )
 
-# Keyed by Neo4j URI → (schema_str, expires_at)
-_SCHEMA_CACHE: dict[str, tuple[str, float]] = {}
-
 _INPUT_SCHEMA = {
     "type": "object",
     "required": ["question"],
@@ -35,14 +33,13 @@ _INPUT_SCHEMA = {
 
 
 def _fetch_rel_patterns(session) -> list[str]:
-    """Return one representative pattern per relationship type, e.g. '(:TestCase)-[:ReusableStep]->(:ReuseableTestStepBlock)'."""
+    """Return one representative pattern per relationship type."""
     try:
         rows = session.run("CALL db.schema.visualization()").data()
     except Exception:
         return []
     if not rows:
         return []
-    # Collect all non-Entity patterns per rel type, then pick one per type
     by_rel: dict[str, list[tuple[str, str]]] = {}
     for rel in rows[0].get("relationships", []):
         from_name = rel[0].get("name", "")
@@ -71,11 +68,9 @@ def _fetch_schema(session, budget: int = 1900) -> str:
 
     rel_patterns = _fetch_rel_patterns(session)
 
-    # Tier 1: node label names only
     tier1_lines = ["Node labels:"] + [f"  {label}" for label in sorted(by_label)]
     tier1 = "\n".join(tier1_lines)
 
-    # Tier 2: relationship patterns (endpoint-aware, replaces the bare rel-types list)
     if rel_patterns:
         tier2 = tier1 + "\nRelationship patterns:\n" + "\n".join(rel_patterns)
     else:
@@ -84,7 +79,6 @@ def _fetch_schema(session, budget: int = 1900) -> str:
     if len(tier2) >= budget:
         return tier2[:budget]
 
-    # Tier 3: per-label property details, one label at a time
     prop_lines: list[str] = []
     truncated = False
     for label in sorted(by_label):
@@ -105,12 +99,17 @@ def _fetch_schema(session, budget: int = 1900) -> str:
     return schema_str
 
 
-def _get_cached_schema(session, uri: str, budget: int, ttl: float) -> str:
-    entry = _SCHEMA_CACHE.get(uri)
+async def _get_cached_schema(driver, uri: str, budget: int, ttl: float, cache: dict) -> str:
+    entry = cache.get(uri)
     if entry is not None and time.monotonic() < entry[1]:
         return entry[0]
-    schema_str = _fetch_schema(session, budget=budget)
-    _SCHEMA_CACHE[uri] = (schema_str, time.monotonic() + ttl)
+
+    def _sync():
+        with driver.session() as s:
+            return _fetch_schema(s, budget)
+
+    schema_str = await asyncio.to_thread(_sync)
+    cache[uri] = (schema_str, time.monotonic() + ttl)
     return schema_str
 
 
@@ -119,7 +118,6 @@ def _strip_cypher_noise(cypher: str) -> str:
 
 
 def _extract_labels(cypher: str) -> set[str]:
-    """Extract node labels used in a Cypher query."""
     return set(re.findall(r':([A-Z][A-Za-z0-9_]*)', _strip_cypher_noise(cypher)))
 
 
@@ -136,14 +134,12 @@ def _trim_neo4j_error(exc: Exception, max_chars: int = 300) -> str:
 
 
 def _make_undirected(cypher: str) -> str:
-    """Strip relationship direction arrows so queries don't fail due to wrong direction."""
-    cypher = re.sub(r'\]->', ']-', cypher)   # (a)-[:T]->(b) → (a)-[:T]-(b)
-    cypher = re.sub(r'<-\[', '-[', cypher)   # (a)<-[:T]-(b) → (a)-[:T]-(b)
+    cypher = re.sub(r'\]->', ']-', cypher)
+    cypher = re.sub(r'<-\[', '-[', cypher)
     return cypher
 
 
 def _known_labels(schema_str: str) -> set[str]:
-    """Extract valid labels from the schema string."""
     labels = set()
     in_labels_section = False
     for line in schema_str.splitlines():
@@ -151,11 +147,9 @@ def _known_labels(schema_str: str) -> set[str]:
             in_labels_section = True
             continue
         if in_labels_section:
-            # Label lines are indented; unindented lines are section headers → stop
             if not line.startswith(" "):
                 in_labels_section = False
                 continue
-            # Labels may be compound (e.g. :`Entity`:`ReuseableTestStepBlock`); extract each
             for m in re.finditer(r'`([A-Za-z][A-Za-z0-9_]*)`', line):
                 labels.add(m.group(1))
     return labels
@@ -179,8 +173,27 @@ def _format_results(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
-    def _query_graph(args: dict) -> str:
+async def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
+    # Instance-level cache: keyed by Neo4j URI → (schema_str, expires_at).
+    # Avoids the module-level global which breaks in multi-process benchmark runs.
+    schema_cache: dict[str, tuple[str, float]] = {}
+
+    tool_config = config.model_copy(deep=True)
+    if config.cypher_tool.base_url:
+        tool_config.model.base_url = config.cypher_tool.base_url
+    if config.cypher_tool.api_key:
+        tool_config.model.api_key = config.cypher_tool.api_key
+    raw_model = config.cypher_tool.model
+    resolved_model = (raw_model if raw_model and "${" not in raw_model else "") or config.model.model_name
+
+    from agent_poc.models.factory import make_backend
+    backend = await make_backend(
+        tool_config,
+        provider=config.cypher_tool.provider,
+        model_override=resolved_model,
+    )
+
+    async def _query_graph(args: dict) -> str:
         question: str = args["question"]
         print(f"[cypher_tool] question received: {question!r}", flush=True)
         driver = None
@@ -192,37 +205,35 @@ def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
             password = os.environ["NEO4J_PASSWORD"]
             driver = GraphDatabase.driver(uri, auth=(username, password))
 
-            with driver.session() as session:
-                schema_str = _get_cached_schema(
-                    session, uri,
-                    budget=config.cypher_tool.schema_budget,
-                    ttl=config.cypher_tool.schema_ttl_seconds,
-                )
+            schema_str = await _get_cached_schema(
+                driver, uri,
+                budget=config.cypher_tool.schema_budget,
+                ttl=config.cypher_tool.schema_ttl_seconds,
+                cache=schema_cache,
+            )
 
-            prompt_template = _PROMPT_PATH.read_text()
+            configured_path = config.cypher_tool.prompt_template
+            prompt_path = (
+                Path(configured_path)
+                if configured_path and "${" not in configured_path
+                else _PROMPT_PATH
+            )
+            prompt_template = prompt_path.read_text()
             prompt = prompt_template.replace("{schema}", schema_str).replace("{question}", question)
 
-            tool_config = config.model_copy(deep=True)
-            raw_model = config.cypher_tool.model
-            resolved_model = (raw_model if raw_model and "${" not in raw_model else "") or config.model.model_name
-            from agent_poc.models.factory import make_backend
-            backend = make_backend(
-                tool_config,
-                provider=config.cypher_tool.provider,
-                model_override=resolved_model,
-            )
             if config.cypher_tool.provider == "tricentis":
                 user_content = [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]
             else:
                 user_content = prompt
             messages = [{"role": "user", "content": user_content}]
-            response = backend.complete(messages, tools=[])
+            response = await backend.complete(messages, tools=[])
             cypher = _make_undirected(_strip_fences(response.content or ""))
 
             if not cypher:
                 return "Error: model returned an empty response."
 
-            # Retry once if the generated Cypher uses labels not in the schema
+            # Retry once if the generated Cypher uses labels not in the schema.
+            # This is a prompt-correction loop — sends different content each time.
             unknown = _extract_labels(cypher) - _known_labels(schema_str)
             if unknown:
                 print(f"[cypher_tool] unknown labels {unknown}, retrying", flush=True)
@@ -233,35 +244,43 @@ def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
                 )
                 retry_content = prompt + correction
                 messages = [{"role": "user", "content": retry_content}]
-                response = backend.complete(messages, tools=[])
+                response = await backend.complete(messages, tools=[])
                 cypher = _make_undirected(_strip_fences(response.content or ""))
                 if not cypher:
                     return "Error: model returned an empty response on retry."
 
             if re.search(r'\$[a-zA-Z_]\w*', cypher):
-                return f"Error: generated Cypher contains query parameters which are not supported. Generated query was: {cypher}"
+                return (
+                    f"Error: generated Cypher contains query parameters which are not supported. "
+                    f"Generated query was: {cypher}"
+                )
 
-            with driver.session() as session:
-                try:
-                    result = session.run(cypher)
-                    records = [dict(record) for record in result]
-                except Exception as cypher_exc:
-                    err = _trim_neo4j_error(cypher_exc)
-                    print(f"[cypher_tool] Cypher error, retrying: {err}", flush=True)
-                    messages = messages + [
-                        {"role": "assistant", "content": response.content},
-                        {"role": "user", "content": (
-                            f"The Cypher query you generated produced an error: {err}. "
-                            f"Rewrite the query to fix this error."
-                        )},
-                    ]
-                    response = backend.complete(messages, tools=[])
-                    cypher = _make_undirected(_strip_fences(response.content or ""))
-                    if not cypher:
-                        return "Error: model returned an empty response on retry."
-                    with driver.session() as session2:
-                        result = session2.run(cypher)
-                        records = [dict(record) for record in result]
+            # Helper: execute one Cypher string; session lifecycle is self-contained in the thread.
+            async def _run_query(cypher_str: str) -> list[dict]:
+                def _sync() -> list[dict]:
+                    with driver.session() as sess:
+                        result = sess.run(cypher_str)
+                        return [dict(r) for r in result]
+                return await asyncio.to_thread(_sync)
+
+            try:
+                records = await _run_query(cypher)
+            except Exception as cypher_exc:
+                err = _trim_neo4j_error(cypher_exc)
+                print(f"[cypher_tool] Cypher error, retrying: {err}", flush=True)
+                # Prompt-correction loop — appends the error so the model can rewrite.
+                messages = messages + [
+                    {"role": "assistant", "content": response.content},
+                    {"role": "user", "content": (
+                        f"The Cypher query you generated produced an error: {err}. "
+                        f"Rewrite the query to fix this error."
+                    )},
+                ]
+                response = await backend.complete(messages, tools=[])
+                cypher = _make_undirected(_strip_fences(response.content or ""))
+                if not cypher:
+                    return "Error: model returned an empty response on retry."
+                records = await _run_query(cypher)
 
             return _format_results(records)
 
