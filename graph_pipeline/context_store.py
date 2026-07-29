@@ -113,6 +113,7 @@ class DatasetContext(BaseModel):
     hierarchy_config: HierarchyConfig | None = None
     design_decisions: list[DesignDecision] = Field(default_factory=list)
     ambiguous_fields: list[str] = Field(default_factory=list)
+    source_fingerprint: str = ""
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import random
 from collections import Counter, defaultdict
 
@@ -152,3 +154,20 @@ def summarize_structure(
         lines.append("Nested array-of-object fields: (none)")
 
     return "\n".join(lines)
+
+
+def compute_fingerprint(records: list[dict], type_field: str | None = None) -> str:
+    """Return a 16-hex-char fingerprint of the type distribution of records.
+
+    Uses the full records list (not a sample) so the fingerprint is deterministic
+    across re-runs on the same file. Falls back to total record count when no type
+    field is detected. Used by the ingest pipeline to skip schema discovery when
+    the dataset is unchanged.
+    """
+    resolved = type_field or _detect_type_field(records)
+    if resolved and any(resolved in r for r in records):
+        counts: Counter = Counter(r.get(resolved, "__untyped__") for r in records)
+    else:
+        counts = Counter({"__total__": len(records)})
+    payload = json.dumps(dict(counts), sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]

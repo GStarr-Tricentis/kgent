@@ -240,6 +240,35 @@ class TestDatasetContextIO:
 
         assert exc_info.value.__cause__ is not None
 
+    def test_source_fingerprint_persists_through_save_load(self, tmp_path, monkeypatch):
+        """source_fingerprint written to YAML is read back with the correct value."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        ctx = context_store.DatasetContext(
+            dataset_id="fp_test",
+            source_fingerprint="abc123def45678",
+        )
+        context_store.save_dataset_context(ctx)
+        reloaded = context_store.load_dataset_context("fp_test")
+        assert reloaded.source_fingerprint == "abc123def45678"
+
+    def test_source_fingerprint_defaults_to_empty_on_old_yaml(self, tmp_path, monkeypatch):
+        """Context files without source_fingerprint load with empty string default."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "old_ds.yaml").write_text(
+            "dataset_id: old_ds\nsource_file: ''\n"
+        )
+        loaded = context_store.load_dataset_context("old_ds")
+        assert loaded.source_fingerprint == ""
+
 
 # ---------------------------------------------------------------------------
 # merge_into_shared — clean new type

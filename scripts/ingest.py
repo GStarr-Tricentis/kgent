@@ -54,6 +54,8 @@ async def main() -> None:
     parser.add_argument("--skip-review", action="store_true", help="Skip human review if canonical names unchanged")
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--force-rediscover", action="store_true",
+                        help="Re-run schema discovery even if the dataset fingerprint is unchanged")
     parser.add_argument("--config", default="kgent/config/config.yaml")
     parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
                         help="Model provider (default: local)")
@@ -92,6 +94,8 @@ async def main() -> None:
     else:
         type_summary = f"{len(records)} records (no type field detected)"
     _indent(f"Loaded {len(records)} records. Types: {type_summary}")
+    from graph_pipeline.sampler import compute_fingerprint
+    fingerprint = compute_fingerprint(records, detected_type_field)
 
     # -------------------------------------------------------------------------
     # Step 2: Load shared context
@@ -106,27 +110,40 @@ async def main() -> None:
     prior_ctx = load_dataset_context(dataset_id)
 
     # -------------------------------------------------------------------------
-    # Step 3: Schema discovery
+    # Step 3: Schema discovery (cached when fingerprint matches prior context)
     # -------------------------------------------------------------------------
     _step(3, TOTAL_STEPS, "Proposing dataset context...")
-    from graph_pipeline.schema_discovery import propose_dataset_context, validate_proposed_context
-    proposed_ctx = await propose_dataset_context(
-        sample=sample,
-        shared_context=shared_ctx,
-        backend=backend,
-        dataset_id=dataset_id,
-    )
-
-    warnings = validate_proposed_context(proposed_ctx, sample)
-    _indent(f"Proposed {len(proposed_ctx.node_types)} node types, "
-            f"{len(proposed_ctx.relationship_types)} relationship types")
-    for w in warnings:
-        _indent(f"  ⚠ {w}")
-
-    from graph_pipeline.context_store import save_dataset_context
-    save_dataset_context(proposed_ctx)
     ctx_path = Path(gp.context_dir) / "datasets" / f"{dataset_id}.yaml"
-    _indent(f"dataset_context saved to {ctx_path}")
+
+    if (
+        prior_ctx is not None
+        and prior_ctx.source_fingerprint == fingerprint
+        and not args.force_rediscover
+    ):
+        proposed_ctx = prior_ctx
+        _indent(
+            "Fingerprint matches prior context — skipping schema discovery. "
+            "Use --force-rediscover to override."
+        )
+    else:
+        from graph_pipeline.schema_discovery import propose_dataset_context, validate_proposed_context
+        proposed_ctx = await propose_dataset_context(
+            sample=sample,
+            shared_context=shared_ctx,
+            backend=backend,
+            dataset_id=dataset_id,
+        )
+
+        warnings = validate_proposed_context(proposed_ctx, sample)
+        _indent(f"Proposed {len(proposed_ctx.node_types)} node types, "
+                f"{len(proposed_ctx.relationship_types)} relationship types")
+        for w in warnings:
+            _indent(f"  ⚠ {w}")
+
+        proposed_ctx.source_fingerprint = fingerprint
+        from graph_pipeline.context_store import save_dataset_context
+        save_dataset_context(proposed_ctx)
+        _indent(f"dataset_context saved to {ctx_path}")
 
     # -------------------------------------------------------------------------
     # Step 4: Human review (or skip if unchanged)

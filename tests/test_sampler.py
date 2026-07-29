@@ -193,3 +193,58 @@ class TestGenericSampling:
         result = sample_records(records, n=20)
         types = {r["type"] for r in result}
         assert "X" in types and "Y" in types
+
+
+# ---------------------------------------------------------------------------
+# compute_fingerprint
+# ---------------------------------------------------------------------------
+
+class TestComputeFingerprint:
+    def test_deterministic_same_input(self):
+        """Same records always produce the same fingerprint."""
+        from graph_pipeline.sampler import compute_fingerprint
+        records = make_records({"A": 10, "B": 5})
+        assert compute_fingerprint(records) == compute_fingerprint(records)
+
+    def test_different_type_counts_differ(self):
+        """Different counts for the same type produce different fingerprints."""
+        from graph_pipeline.sampler import compute_fingerprint
+        fp_a = compute_fingerprint(make_records({"A": 10, "B": 5}))
+        fp_b = compute_fingerprint(make_records({"A": 10, "B": 6}))
+        assert fp_a != fp_b
+
+    def test_different_type_names_differ(self):
+        """Different type names (same total count) produce different fingerprints."""
+        from graph_pipeline.sampler import compute_fingerprint
+        fp_a = compute_fingerprint(make_records({"Widget": 10}))
+        fp_b = compute_fingerprint(make_records({"Gadget": 10}))
+        assert fp_a != fp_b
+
+    def test_empty_records_returns_16_char_string(self):
+        """Empty input does not raise and returns a 16-character hex string."""
+        from graph_pipeline.sampler import compute_fingerprint
+        result = compute_fingerprint([])
+        assert isinstance(result, str)
+        assert len(result) == 16
+
+    def test_no_type_field_fingerprint_changes_with_count(self):
+        """Records with no detectable type field produce fingerprints that differ by count."""
+        from graph_pipeline.sampler import compute_fingerprint
+        records_5 = [{"id": f"r{i}"} for i in range(5)]
+        records_6 = [{"id": f"r{i}"} for i in range(6)]
+        assert compute_fingerprint(records_5) != compute_fingerprint(records_6)
+        assert len(compute_fingerprint(records_5)) == 16
+
+    def test_explicit_type_field_overrides_detection(self):
+        """Passing type_field explicitly overrides auto-detection."""
+        from graph_pipeline.sampler import compute_fingerprint
+        # 'label' is not in _TYPE_FIELD_CANDIDATES, so auto-detection falls back to total count.
+        # The explicit call distributes by label; the auto call uses total count.
+        records = [
+            {"id": "1", "label": "Widget"},
+            {"id": "2", "label": "Widget"},
+            {"id": "3", "label": "Gadget"},
+        ]
+        fp_label = compute_fingerprint(records, type_field="label")
+        fp_auto = compute_fingerprint(records)  # 'label' not in _TYPE_FIELD_CANDIDATES → total count
+        assert fp_label != fp_auto
