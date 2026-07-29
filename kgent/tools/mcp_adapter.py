@@ -99,7 +99,8 @@ class MCPAdapter:
                     logger.info("MCP '%s': registered %d tools", self._name, len(self._tools))
                     self._session = session
                     session_ready.set()
-                    assert self._disconnect_event is not None
+                    if self._disconnect_event is None:
+                        raise RuntimeError("MCPAdapter._disconnect_event is None after connect")
                     await self._disconnect_event.wait()
         except anyio.get_cancelled_exc_class():
             raise
