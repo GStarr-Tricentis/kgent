@@ -139,20 +139,20 @@ async def test_call_tool_returns_expected_string():
     assert result == "hello world"
 
 
-async def test_call_tool_reconnects_and_retries_on_broken_pipe():
-    """BrokenPipeError triggers one reconnect; the retry succeeds."""
+async def test_call_tool_raises_on_broken_pipe():
+    """BrokenPipeError propagates out of call_tool(); _mcp_loop owns reconnection."""
     from agent_poc.tools.mcp_adapter import MCPAdapter
     session = _make_session(
         [_mcp_tool("t1")],
-        call_results=[BrokenPipeError("pipe broke"), "recovered"],
+        call_results=[BrokenPipeError("pipe broke")],
     )
     sc, cs = _mcp_patches(session)
     with sc, cs:
         adapter = MCPAdapter("test", "cmd", [])
         await adapter.connect()
-        result = await adapter.call_tool("t1", {})
-    assert result == "recovered"
-    assert adapter._call_count == 1
+        with pytest.raises(BrokenPipeError, match="pipe broke"):
+            await adapter.call_tool("t1", {})
+    assert adapter._call_count == 0
 
 
 async def test_call_tool_does_not_reconnect_on_non_transport_error():
@@ -202,7 +202,7 @@ async def test_tool_callables_are_bound_to_correct_names():
 async def test_disconnect_before_connect_does_not_raise():
     from agent_poc.tools.mcp_adapter import MCPAdapter
     adapter = MCPAdapter("srv", "cmd", [])
-    await adapter.disconnect()  # _stack is None — must be a no-op
+    await adapter.disconnect()  # _tg is None — must be a no-op
 
 
 async def test_context_manager_cleans_up_on_exit():
@@ -213,4 +213,71 @@ async def test_context_manager_cleans_up_on_exit():
         async with MCPAdapter("test", "cmd", []) as adapter:
             assert len(adapter.list_tools()) == 1
     assert adapter._session is None
-    assert adapter._stack is None
+    assert adapter._tg is None
+
+
+# ── Fix 2: max_calls wiring ───────────────────────────────────────────────────
+
+async def test_mcp_adapter_accepts_max_calls_constructor_param():
+    """MCPAdapter.__init__ must accept a max_calls kwarg and store it as _max_calls."""
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    adapter = MCPAdapter("srv", "cmd", [], max_calls=50)
+    assert adapter._max_calls == 50
+
+
+async def test_proactive_reconnect_fires_at_max_calls():
+    """When _call_count reaches _max_calls, reconnect fires before the next call."""
+    from agent_poc.tools.mcp_adapter import MCPAdapter
+    session = _make_session([_mcp_tool("t1")], call_results=["a", "b"])
+    sc, cs = _mcp_patches(session)
+    with sc, cs:
+        adapter = MCPAdapter("test", "cmd", [], max_calls=1)
+        await adapter.connect()
+        r1 = await adapter.call_tool("t1", {})
+        # _call_count is now 1 == max_calls; next call must trigger proactive reconnect
+        r2 = await adapter.call_tool("t1", {})
+
+    assert r1 == "a"
+    assert r2 == "b"
+    # initialize() called twice: initial connect + after proactive reconnect
+    assert session.initialize.call_count == 2
+
+
+async def test_build_registry_wires_max_calls_from_config():
+    """build_registry must forward max_calls_before_reconnect from config to MCPAdapter."""
+    from agent_poc.agent.instrumentation import build_registry
+    from agent_poc.config.loader import (
+        AgentCoreConfig, AgentPocConfig, MCPConfig, MCPServerConfig,
+        ModelConfig, ToolsConfig,
+    )
+
+    config = AgentPocConfig(
+        model=ModelConfig(provider="local", base_url="http://x", api_key="x", model_name="m"),
+        agent=AgentCoreConfig(),
+        tools=ToolsConfig(static=[]),
+        mcp=MCPConfig(servers=[
+            MCPServerConfig(name="srv", command="cmd", args=[], max_calls_before_reconnect=77)
+        ]),
+    )
+
+    captured: list[dict] = []
+
+    class _FakeAdapter:
+        def __init__(self, name, cmd, args, env, max_calls=None):
+            captured.append({"name": name, "max_calls": max_calls})
+            self._tools: list = []
+
+        async def connect(self):
+            pass
+
+        def list_tools(self):
+            return []
+
+    with (
+        patch("agent_poc.tools.mcp_adapter.MCP_AVAILABLE", True),
+        patch("agent_poc.tools.mcp_adapter.MCPAdapter", _FakeAdapter),
+    ):
+        await build_registry(config)
+
+    assert len(captured) == 1
+    assert captured[0]["max_calls"] == 77

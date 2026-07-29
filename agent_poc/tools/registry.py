@@ -4,6 +4,8 @@ import asyncio
 import inspect
 import logging
 
+import anyio
+
 from agent_poc.agent.types import RegisteredTool, ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,10 @@ class ToolRegistry:
 
     def register_adapter(self, adapter) -> None:
         self._adapters.append(adapter)
+
+    @property
+    def adapters(self):
+        return list(self._adapters)
 
     def get(self, name: str) -> RegisteredTool | None:
         return self._tools.get(name)
@@ -43,24 +49,25 @@ class ToolRegistry:
         timeout = timeout_override if timeout_override is not None else tool.timeout_seconds
 
         try:
-            if inspect.iscoroutinefunction(tool.callable):
-                coro = tool.callable(call.arguments)
-            else:
-                coro = asyncio.to_thread(tool.callable, call.arguments)
-            output = await asyncio.wait_for(coro, timeout=timeout)
-        except asyncio.TimeoutError:
-            return ToolResult(
-                tool_call_id=call.id,
-                name=call.name,
-                error=True,
-                output=f"Tool '{call.name}' timed out after {timeout}s.",
-            )
+            with anyio.move_on_after(timeout) as cancel_scope:
+                if inspect.iscoroutinefunction(tool.callable):
+                    output = await tool.callable(call.arguments)
+                else:
+                    output = await asyncio.to_thread(tool.callable, call.arguments)
         except Exception as exc:
             return ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
                 error=True,
                 output=f"Tool '{call.name}' raised an exception: {exc}",
+            )
+
+        if cancel_scope.cancelled_caught:
+            return ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                error=True,
+                output=f"Tool '{call.name}' timed out after {timeout}s.",
             )
 
         return ToolResult(
@@ -74,4 +81,7 @@ class ToolRegistry:
 
     async def __aexit__(self, *exc_info):
         for adapter in self._adapters:
-            await adapter.disconnect()
+            try:
+                await adapter.shutdown()
+            except Exception as exc:
+                logger.debug("Adapter shutdown error: %s", exc)

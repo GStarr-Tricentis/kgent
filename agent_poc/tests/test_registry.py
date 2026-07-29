@@ -141,5 +141,5 @@ async def test_context_manager_disconnects_adapters_on_exit():
     async with r:
         pass
 
-    adapter1.disconnect.assert_awaited_once()
-    adapter2.disconnect.assert_awaited_once()
+    adapter1.shutdown.assert_awaited_once()
+    adapter2.shutdown.assert_awaited_once()
