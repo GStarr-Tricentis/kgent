@@ -1,0 +1,45 @@
+You are extracting entities and relationships from records that contain ambiguous fields.
+
+DATASET ID: {dataset_id}
+RECORD IDENTITY FIELD: {id_field}
+AMBIGUOUS FIELDS: {ambiguous_fields}
+
+RECORDS:
+{records_json}
+
+Each element in the RECORDS array is an object with:
+  "label"  — the node label for that record
+  "record" — the record data
+
+For each record, examine only the ambiguous fields and determine whether their values produce:
+- additional Node objects (return in "nodes")
+- additional Relationship objects (return in "relationships")
+- or should be ignored
+
+Return ONLY valid JSON — no markdown, no explanation — a JSON array with one entry per input record:
+[
+  {{
+    "source_record_id": "<value of the {id_field} field from the record>",
+    "nodes": [
+      {{
+        "id": "<dataset_id>:<value>",
+        "label": "<PascalCase label>",
+        "properties": {{}},
+        "source_record_id": "<value of the {id_field} field>"
+      }}
+    ],
+    "relationships": [
+      {{
+        "from_id": "<dataset_id>:<value>",
+        "to_id": "<dataset_id>:<value>",
+        "from_label": "<label>",
+        "to_label": "<label>",
+        "type": "<SCREAMING_SNAKE_CASE>",
+        "properties": {{}},
+        "source_record_id": "<value of the {id_field} field>"
+      }}
+    ]
+  }}
+]
+
+Return an entry for every input record. For records with nothing to extract, use empty arrays.
