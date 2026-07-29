@@ -16,7 +16,7 @@ from kgent.tools.registry import ToolRegistry
 from kgent.tests.conftest import MockBackend, make_stop_response, make_tool_call_response
 
 
-def _config(max_iterations: int = 5, window: int = 3) -> AgentPocConfig:
+def _config(max_iterations: int = 5) -> AgentPocConfig:
     return AgentPocConfig(
         model=ModelConfig(
             provider="test",
@@ -28,7 +28,6 @@ def _config(max_iterations: int = 5, window: int = 3) -> AgentPocConfig:
         agent=AgentCoreConfig(
             max_iterations=max_iterations,
             tool_timeout_seconds=30,
-            repeated_call_window=window,
         ),
         tools=ToolsConfig(static=[]),
         mcp=MCPConfig(servers=[]),

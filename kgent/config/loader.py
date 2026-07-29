@@ -41,7 +41,6 @@ class ModelConfig(BaseModel):
 class AgentCoreConfig(BaseModel):
     max_iterations: int = 20
     tool_timeout_seconds: float = 30.0
-    repeated_call_window: int = 3
 
 
 class MCPServerConfig(BaseModel):

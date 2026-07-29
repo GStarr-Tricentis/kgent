@@ -16,7 +16,6 @@ def test_load_config_model_name():
 def test_load_config_agent_defaults():
     c = load_config(CONFIG_PATH)
     assert c.agent.max_iterations == 20
-    assert c.agent.repeated_call_window == 3
 
 
 def test_load_config_sandbox():
