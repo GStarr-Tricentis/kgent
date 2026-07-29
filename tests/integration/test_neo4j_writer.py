@@ -252,6 +252,136 @@ class TestBatchBehaviour:
         assert len(result.errors) >= 1
 
 
+def _make_mock_driver(fail_on_batch_index: int | None = None):
+    """Return (driver, call_counter) where call_counter['n'] tracks begin_transaction calls.
+
+    If fail_on_batch_index is set, tx.commit() raises RuntimeError on that batch.
+    All other batches succeed and report nodes_created=1 per statement.
+    """
+    from unittest.mock import MagicMock
+
+    call_counter = {"n": 0}
+
+    def _begin_transaction():
+        idx = call_counter["n"]
+        call_counter["n"] += 1
+
+        tx = MagicMock()
+        summary = MagicMock()
+        summary.counters.nodes_created = 1
+        summary.counters.relationships_created = 0
+        tx.run.return_value.consume.return_value = summary
+
+        if idx == fail_on_batch_index:
+            tx.commit.side_effect = RuntimeError(f"Simulated failure on batch {idx}")
+        return tx
+
+    session = MagicMock()
+    session.__enter__ = lambda s: s
+    session.__exit__ = MagicMock(return_value=False)
+    session.begin_transaction.side_effect = _begin_transaction
+
+    driver = MagicMock()
+    driver.session.return_value = session
+    return driver, call_counter
+
+
+class TestFailSoftBehaviour:
+    """Verify fail-soft batch behaviour using mock drivers — no live Neo4j required."""
+
+    def test_all_batches_attempted_when_middle_fails(self):
+        """When the middle batch fails, the remaining batch is still attempted."""
+        from graph_pipeline.neo4j_writer import write_nodes
+
+        # 6 nodes → 3 batches of 2; batch index 1 (middle) will fail
+        nodes = [make_test_node("Label", f"n{i}", f"Node {i}") for i in range(6)]
+        driver, call_counter = _make_mock_driver(fail_on_batch_index=1)
+
+        write_nodes(nodes, driver, batch_size=2)
+
+        assert call_counter["n"] == 3, (
+            f"Expected 3 begin_transaction calls (one per batch), got {call_counter['n']}"
+        )
+
+    def test_error_recorded_for_failing_batch(self):
+        """A batch failure produces exactly one error entry in WriteResult.errors."""
+        from graph_pipeline.neo4j_writer import write_nodes
+
+        nodes = [make_test_node("Label", f"n{i}", f"Node {i}") for i in range(4)]
+        driver, _ = _make_mock_driver(fail_on_batch_index=0)
+
+        result = write_nodes(nodes, driver, batch_size=2)
+
+        assert len(result.errors) == 1
+        assert "Batch 0 failed" in result.errors[0]
+        assert "Simulated failure" in result.errors[0]
+
+    def test_successful_batches_counted_despite_middle_failure(self):
+        """nodes_created reflects the two successful batches, not the failed one."""
+        from graph_pipeline.neo4j_writer import write_nodes
+
+        # 6 nodes → 3 batches of 2; batch 1 fails, batches 0 and 2 succeed (2 nodes each)
+        nodes = [make_test_node("Label", f"n{i}", f"Node {i}") for i in range(6)]
+        driver, _ = _make_mock_driver(fail_on_batch_index=1)
+
+        result = write_nodes(nodes, driver, batch_size=2)
+
+        assert result.nodes_created == 4
+        assert len(result.errors) == 1
+
+    def test_write_relationships_all_batches_attempted_on_failure(self):
+        """write_relationships continues past a failing batch."""
+        from graph_pipeline.neo4j_writer import write_relationships
+        from graph_pipeline.models import ExtractionSource, Relationship
+
+        def _make_rel(i):
+            return Relationship(
+                from_id=f"ds:n{i}",
+                to_id=f"ds:n{i + 1}",
+                from_label="Label",
+                to_label="Label",
+                type="REL",
+                properties={},
+                source_record_id=f"n{i}",
+                extraction_source=ExtractionSource.RULE_BASED,
+            )
+
+        rels = [_make_rel(i) for i in range(6)]
+        driver, call_counter = _make_mock_driver(fail_on_batch_index=0)
+
+        write_relationships(rels, driver, batch_size=2)
+
+        assert call_counter["n"] == 3
+
+    def test_write_all_attempts_relationships_despite_node_errors(self):
+        """write_all calls write_relationships even when write_nodes produced errors."""
+        from unittest.mock import MagicMock, patch
+        from graph_pipeline.neo4j_writer import WriteResult, write_all
+        from graph_pipeline.models import ExtractionSource, Node, Relationship
+
+        node_result = WriteResult(nodes_created=2, errors=["Batch 0 failed: timeout"])
+        rel_result = WriteResult(relationships_created=1)
+
+        nodes = [Node(
+            id="ds:n1", label="L", properties={},
+            source_record_id="n1", extraction_source=ExtractionSource.RULE_BASED,
+        )]
+        rels = [Relationship(
+            from_id="ds:n1", to_id="ds:n2", from_label="L", to_label="L",
+            type="REL", properties={}, source_record_id="n1",
+            extraction_source=ExtractionSource.RULE_BASED,
+        )]
+
+        with patch("graph_pipeline.neo4j_writer.write_nodes", return_value=node_result), \
+             patch("graph_pipeline.neo4j_writer.write_relationships", return_value=rel_result) as mock_rels, \
+             patch("graph_pipeline.neo4j_writer.create_constraints"):
+            result = write_all(nodes, rels, MagicMock())
+
+        mock_rels.assert_called_once()
+        assert result.relationships_created == 1
+        assert result.errors == ["Batch 0 failed: timeout"]
+
+
 @pytest.mark.integration
 class TestCreateConstraints:
     def test_constraint_created(self, driver, cleanup):

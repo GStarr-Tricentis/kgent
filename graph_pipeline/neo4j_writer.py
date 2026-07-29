@@ -110,7 +110,7 @@ def write_nodes(
     driver,
     batch_size: int = 500,
 ) -> WriteResult:
-    """Write nodes in batches. Fail-fast on batch error — remaining batches skipped."""
+    """Write nodes in batches. All batches are attempted; errors accumulate in result.errors."""
     result = WriteResult()
     if not nodes:
         return result
@@ -120,7 +120,7 @@ def write_nodes(
 
     with driver.session() as session:
         for batch_index, batch in enumerate(batches):
-            ok = _run_batch(
+            _run_batch(
                 session,
                 batch,
                 batch_index,
@@ -128,8 +128,6 @@ def write_nodes(
                 count_key_created="nodes_created",
                 count_key_matched="nodes_matched",
             )
-            if not ok:
-                break  # fail-fast
 
     return result
 
@@ -139,7 +137,7 @@ def write_relationships(
     driver,
     batch_size: int = 500,
 ) -> WriteResult:
-    """Write relationships in batches. Fail-fast on batch error."""
+    """Write relationships in batches. All batches are attempted; errors accumulate in result.errors."""
     result = WriteResult()
     if not rels:
         return result
@@ -162,7 +160,7 @@ def write_relationships(
 
     with driver.session() as session:
         for batch_index, batch in enumerate(batches):
-            ok = _run_batch(
+            _run_batch(
                 session,
                 batch,
                 batch_index,
@@ -170,8 +168,6 @@ def write_relationships(
                 count_key_created="relationships_created",
                 count_key_matched="relationships_matched",
             )
-            if not ok:
-                break
 
     return result
 
@@ -184,7 +180,11 @@ def write_all(
 ) -> WriteResult:
     """Full write: constraints → nodes → relationships.
 
-    Nodes are written before relationships to prevent MATCH failures.
+    Nodes are written before relationships. All batches are attempted even when
+    some fail; errors accumulate in WriteResult.errors. Relationship writes that
+    reference nodes from failed batches will produce their own Neo4j errors, which
+    are also recorded. The caller is responsible for distinguishing fatal errors
+    from skipped-relationship warnings.
     """
     labels = list({n.label for n in nodes})
     if labels:
@@ -194,8 +194,7 @@ def write_all(
     node_result = write_nodes(nodes, driver, batch_size=batch_size)
     result.merge(node_result)
 
-    if not result.errors:
-        rel_result = write_relationships(rels, driver, batch_size=batch_size)
-        result.merge(rel_result)
+    rel_result = write_relationships(rels, driver, batch_size=batch_size)
+    result.merge(rel_result)
 
     return result
