@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 
 from kgent.agent.types import ModelBackend, ModelResponse, RegisteredTool, ToolCall, ToolResult, ToolSource
-from kgent.config.loader import AgentPocConfig
+from kgent.config.loader import KgentConfig
 from kgent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ def reconstruct_timed_results(state, registry: TimingRegistry) -> list[TimedTool
 
 
 async def build_registry(
-    config: AgentPocConfig,
+    config: KgentConfig,
     skip_servers: frozenset[str] = frozenset(),
 ) -> TimingRegistry:
     from kgent.tools.generated import make_save_as_tool

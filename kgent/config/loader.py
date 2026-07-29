@@ -95,7 +95,7 @@ class CypherToolConfig(BaseModel):
     schema_budget: int = 1900
 
 
-class AgentPocConfig(BaseModel):
+class KgentConfig(BaseModel):
     model: ModelConfig
     agent: AgentCoreConfig
     tools: ToolsConfig
@@ -118,6 +118,6 @@ def _expand_env_in_raw(obj):
     return obj
 
 
-def load_config(path: str | Path) -> AgentPocConfig:
+def load_config(path: str | Path) -> KgentConfig:
     raw = yaml.safe_load(Path(path).read_text())
-    return AgentPocConfig.model_validate(_expand_env_in_raw(raw))
+    return KgentConfig.model_validate(_expand_env_in_raw(raw))

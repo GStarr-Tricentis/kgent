@@ -247,11 +247,11 @@ async def test_build_registry_wires_max_calls_from_config():
     """build_registry must forward max_calls_before_reconnect from config to MCPAdapter."""
     from kgent.agent.instrumentation import build_registry
     from kgent.config.loader import (
-        AgentCoreConfig, AgentPocConfig, MCPConfig, MCPServerConfig,
+        AgentCoreConfig, KgentConfig, MCPConfig, MCPServerConfig,
         ModelConfig, ToolsConfig,
     )
 
-    config = AgentPocConfig(
+    config = KgentConfig(
         model=ModelConfig(provider="local", base_url="http://x", api_key="x", model_name="m"),
         agent=AgentCoreConfig(),
         tools=ToolsConfig(static=[]),

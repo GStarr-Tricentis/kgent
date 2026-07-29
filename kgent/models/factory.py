@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from kgent.agent.types import ModelBackend
-from kgent.config.loader import AgentPocConfig
+from kgent.config.loader import KgentConfig
 from kgent.models.openai_compatible import OpenAICompatibleBackend
 
 
 async def make_backend(
-    config: AgentPocConfig,
+    config: KgentConfig,
     provider: str | None = None,
     model_override: str | None = None,
 ) -> ModelBackend:

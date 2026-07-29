@@ -10,7 +10,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from kgent.agent.types import RegisteredTool, ToolSource
-from kgent.config.loader import AgentPocConfig
+from kgent.config.loader import KgentConfig
 
 _PROMPT_PATH = Path(__file__).parent.parent / "agent" / "prompts" / "nlp_to_cypher.txt"
 
@@ -176,7 +176,7 @@ def _format_results(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
+async def make_cypher_tool(config: KgentConfig) -> RegisteredTool:
     # Instance-level cache: keyed by Neo4j URI → (schema_str, expires_at).
     # Avoids the module-level global which breaks in multi-process benchmark runs.
     schema_cache: dict[str, tuple[str, float]] = {}

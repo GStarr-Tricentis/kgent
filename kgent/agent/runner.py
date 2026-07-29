@@ -6,7 +6,7 @@ import logging
 
 from kgent.agent.state import RunState
 from kgent.agent.types import ModelBackend, ToolResult
-from kgent.config.loader import AgentPocConfig
+from kgent.config.loader import KgentConfig
 from kgent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ class AgentRunner:
         self,
         backend: ModelBackend,
         registry: ToolRegistry,
-        config: AgentPocConfig,
+        config: KgentConfig,
         system_prompt: str = "",
     ) -> None:
         self._backend = backend

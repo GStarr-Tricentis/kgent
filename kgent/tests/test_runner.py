@@ -6,7 +6,7 @@ from kgent.agent.runner import AgentRunner
 from kgent.agent.types import RegisteredTool, ToolSource
 from kgent.config.loader import (
     AgentCoreConfig,
-    AgentPocConfig,
+    KgentConfig,
     MCPConfig,
     ModelConfig,
     SandboxConfig,
@@ -16,8 +16,8 @@ from kgent.tools.registry import ToolRegistry
 from kgent.tests.conftest import MockBackend, make_stop_response, make_tool_call_response
 
 
-def _config(max_iterations: int = 5) -> AgentPocConfig:
-    return AgentPocConfig(
+def _config(max_iterations: int = 5) -> KgentConfig:
+    return KgentConfig(
         model=ModelConfig(
             provider="test",
             base_url="http://localhost",
