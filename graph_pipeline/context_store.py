@@ -233,7 +233,12 @@ def load_shared_context() -> SharedContext:
     path = _shared_path()
     if not path.exists():
         return SharedContext()
-    return _shared_from_dict(_load_yaml(path))
+    try:
+        return _shared_from_dict(_load_yaml(path))
+    except Exception as exc:
+        raise ValueError(
+            f"Could not load shared context from {path}: {exc}"
+        ) from exc
 
 
 def load_dataset_context(dataset_id: str) -> DatasetContext | None:
@@ -241,7 +246,13 @@ def load_dataset_context(dataset_id: str) -> DatasetContext | None:
     if not path.exists():
         return None
     data = _load_yaml(path)
-    return DatasetContext(**data)
+    try:
+        return DatasetContext(**data)
+    except Exception as exc:
+        raise ValueError(
+            f"Could not load dataset context from {path}: {exc}\n"
+            "Fix the YAML file and try again, or delete it to regenerate from scratch."
+        ) from exc
 
 
 def save_dataset_context(ctx: DatasetContext) -> None:

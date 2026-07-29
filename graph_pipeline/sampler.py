@@ -46,37 +46,33 @@ def sample_records(records: list[dict], n: int = 50, type_field: str | None = No
         chosen = random.sample(records, min(n, len(records)))
         return [_truncate_nested_arrays(r) for r in chosen]
 
-    # Group by type field
-    by_type: dict[str, list[dict]] = defaultdict(list)
-    for r in records:
-        by_type[r.get(resolved_field, "__untyped__")].append(r)
+    # Group by type field — store indices into records, not object references
+    by_type_indices: dict[str, list[int]] = defaultdict(list)
+    for i, r in enumerate(records):
+        by_type_indices[r.get(resolved_field, "__untyped__")].append(i)
 
     # First pass: guarantee minimum 3 per type
-    guaranteed: dict[str, list[dict]] = {}
-    for type_name, group in by_type.items():
-        guaranteed[type_name] = random.sample(group, min(3, len(group)))
+    guaranteed_indices: dict[str, list[int]] = {}
+    for type_name, indices in by_type_indices.items():
+        guaranteed_indices[type_name] = random.sample(indices, min(3, len(indices)))
 
-    guaranteed_count = sum(len(v) for v in guaranteed.values())
+    guaranteed_count = sum(len(v) for v in guaranteed_indices.values())
     remaining_budget = max(0, n - guaranteed_count)
 
     # Second pass: proportional fill from the remainder
-    pool: list[dict] = []
-    for type_name, group in by_type.items():
-        already_picked_ids = {id(r) for r in guaranteed[type_name]}
-        leftover = [r for r in group if id(r) not in already_picked_ids]
-        pool.extend(leftover)
+    pool_indices: list[int] = []
+    for type_name, indices in by_type_indices.items():
+        picked = set(guaranteed_indices[type_name])
+        pool_indices.extend(i for i in indices if i not in picked)
 
-    if pool and remaining_budget > 0:
-        extras = random.sample(pool, min(remaining_budget, len(pool)))
+    if pool_indices and remaining_budget > 0:
+        extras = random.sample(pool_indices, min(remaining_budget, len(pool_indices)))
     else:
         extras = []
 
-    all_chosen: list[dict] = []
-    for group in guaranteed.values():
-        all_chosen.extend(group)
-    all_chosen.extend(extras)
-
-    return [_truncate_nested_arrays(r) for r in all_chosen]
+    all_indices: list[int] = [i for idxs in guaranteed_indices.values() for i in idxs]
+    all_indices.extend(extras)
+    return [_truncate_nested_arrays(records[i]) for i in all_indices]
 
 
 def summarize_structure(

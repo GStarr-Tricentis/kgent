@@ -110,6 +110,19 @@ class TestSampleRecords:
         small_count = sum(1 for r in result if r["typeName"] == "Small")
         assert big_count > small_count
 
+    def test_no_duplicate_records_in_sample(self):
+        """No record appears twice in the output regardless of sample size or type distribution."""
+        from graph_pipeline.sampler import sample_records
+        records = make_records({"A": 10, "B": 10, "C": 10})
+        # Run many times because sampling is random
+        for _ in range(30):
+            result = sample_records(records, n=15)
+            unique_ids = {r["uniqueId"] for r in result}
+            assert len(unique_ids) == len(result), (
+                f"Duplicate records in sample: {len(result)} items, "
+                f"{len(unique_ids)} unique IDs"
+            )
+
 
 # ---------------------------------------------------------------------------
 # summarize_structure

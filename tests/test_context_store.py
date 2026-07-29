@@ -133,6 +133,22 @@ structural_patterns: []
         assert sc.node_types[0].name == "TestCase"
         assert sc.node_types[0].source_datasets == ["meap"]
 
+    def test_malformed_shared_context_raises_value_error(self, tmp_path, monkeypatch):
+        """A corrupted shared_context.yaml raises ValueError containing the file path."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        # node_types must be a list; a string value triggers validation failure in _shared_from_dict
+        bad_yaml = "version: 1\nnode_types: not_a_list\nrelationship_types: []\n"
+        (tmp_path / "shared_context.yaml").write_text(bad_yaml)
+
+        with pytest.raises(ValueError) as exc_info:
+            context_store.load_shared_context()
+
+        assert "shared_context.yaml" in str(exc_info.value)
+
 
 # ---------------------------------------------------------------------------
 # load_dataset_context / save_dataset_context
@@ -173,6 +189,56 @@ class TestDatasetContextIO:
         ctx = make_dataset_ctx(dataset_id="new_ds")
         context_store.save_dataset_context(ctx)
         assert (tmp_path / "datasets" / "new_ds.yaml").exists()
+
+    def test_malformed_dataset_context_raises_value_error(self, tmp_path, monkeypatch):
+        """A YAML file that fails DatasetContext validation raises ValueError, not a raw Pydantic error."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        # dataset_id is a required field; omitting it triggers validation failure
+        bad_yaml = "source_file: something.jsonl\nnode_types: []\n"
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "bad_ds.yaml").write_text(bad_yaml)
+
+        with pytest.raises(ValueError) as exc_info:
+            context_store.load_dataset_context("bad_ds")
+
+        assert "bad_ds.yaml" in str(exc_info.value)
+
+    def test_malformed_dataset_context_error_contains_hint(self, tmp_path, monkeypatch):
+        """The ValueError message tells the user how to recover."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        bad_yaml = "source_file: something.jsonl\nnode_types: []\n"
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "bad_ds2.yaml").write_text(bad_yaml)
+
+        with pytest.raises(ValueError) as exc_info:
+            context_store.load_dataset_context("bad_ds2")
+
+        msg = str(exc_info.value)
+        assert "Fix the YAML file" in msg or "delete it" in msg
+
+    def test_malformed_dataset_context_preserves_cause(self, tmp_path, monkeypatch):
+        """The original exception is attached as __cause__ so full tracebacks still show it."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        bad_yaml = "source_file: something.jsonl\nnode_types: []\n"
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "bad_ds3.yaml").write_text(bad_yaml)
+
+        with pytest.raises(ValueError) as exc_info:
+            context_store.load_dataset_context("bad_ds3")
+
+        assert exc_info.value.__cause__ is not None
 
 
 # ---------------------------------------------------------------------------
