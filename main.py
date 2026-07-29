@@ -36,8 +36,7 @@ async def _mcp_loop(
             )
         await asyncio.sleep(delay)
         try:
-            async with adapter._reconnect_lock:
-                await adapter.connect()
+            await adapter.reconnect()
             delay = initial_delay
         except Exception as exc:
             logger.warning(

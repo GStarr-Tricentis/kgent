@@ -133,6 +133,10 @@ class MCPAdapter:
         self._disconnect_event = None
         self._tools = []
 
+    async def reconnect(self) -> None:
+        async with self._reconnect_lock:
+            await self.connect()
+
     async def shutdown(self) -> None:
         self._clean_disconnect = True
         await self.disconnect()
