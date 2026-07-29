@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import datetime
+import fcntl
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,6 +154,16 @@ def _shared_path() -> Path:
     return _context_dir() / "shared_context.yaml"
 
 
+@contextlib.contextmanager
+def _shared_write_lock():
+    """Exclusive advisory lock on shared_context.yaml for the duration of a write."""
+    lock_path = _shared_path().with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        yield
+
+
 def _dataset_path(dataset_id: str) -> Path:
     return _context_dir() / "datasets" / f"{dataset_id}.yaml"
 
@@ -264,81 +276,84 @@ def save_dataset_context(ctx: DatasetContext) -> None:
 def merge_into_shared(dataset_ctx: DatasetContext) -> SharedContext:
     """Merge dataset_ctx into shared_context, enforcing canonical label consistency.
 
-    Raises MergeConflict if the same source name already maps to a different
-    canonical label. Never writes to disk when a conflict is detected.
+    The read-modify-write is protected by an exclusive file lock on
+    shared_context.lock, preventing data loss when two ingest processes run
+    concurrently. Raises MergeConflict if the same source name already maps to a
+    different canonical label. Never writes to disk when a conflict is detected.
     """
-    sc = load_shared_context()
+    with _shared_write_lock():
+        sc = load_shared_context()
 
-    # Build lookup: source_name → (canonical, first_dataset_id)
-    node_index: dict[str, tuple[str, str]] = {
-        nt.name: (nt.maps_to, nt.source_datasets[0] if nt.source_datasets else "")
-        for nt in sc.node_types
-    }
-    rel_index: dict[str, tuple[str, str]] = {
-        rt.name: (rt.maps_to, rt.source_datasets[0] if rt.source_datasets else "")
-        for rt in sc.relationship_types
-    }
+        # Build lookup: source_name → (canonical, first_dataset_id)
+        node_index: dict[str, tuple[str, str]] = {
+            nt.name: (nt.maps_to, nt.source_datasets[0] if nt.source_datasets else "")
+            for nt in sc.node_types
+        }
+        rel_index: dict[str, tuple[str, str]] = {
+            rt.name: (rt.maps_to, rt.source_datasets[0] if rt.source_datasets else "")
+            for rt in sc.relationship_types
+        }
 
-    # Validate all incoming types before mutating anything
-    for nt in dataset_ctx.node_types:
-        if nt.name in node_index:
-            existing_canonical, existing_ds = node_index[nt.name]
-            if existing_canonical != nt.maps_to:
-                raise MergeConflict(
-                    type="node",
-                    source_name=nt.name,
-                    existing_canonical=existing_canonical,
-                    proposed_canonical=nt.maps_to,
-                    existing_dataset=existing_ds,
-                    new_dataset=dataset_ctx.dataset_id,
+        # Validate all incoming types before mutating anything
+        for nt in dataset_ctx.node_types:
+            if nt.name in node_index:
+                existing_canonical, existing_ds = node_index[nt.name]
+                if existing_canonical != nt.maps_to:
+                    raise MergeConflict(
+                        type="node",
+                        source_name=nt.name,
+                        existing_canonical=existing_canonical,
+                        proposed_canonical=nt.maps_to,
+                        existing_dataset=existing_ds,
+                        new_dataset=dataset_ctx.dataset_id,
+                    )
+
+        for rt in dataset_ctx.relationship_types:
+            if rt.name in rel_index:
+                existing_canonical, existing_ds = rel_index[rt.name]
+                if existing_canonical != rt.maps_to:
+                    raise MergeConflict(
+                        type="relationship",
+                        source_name=rt.name,
+                        existing_canonical=existing_canonical,
+                        proposed_canonical=rt.maps_to,
+                        existing_dataset=existing_ds,
+                        new_dataset=dataset_ctx.dataset_id,
+                    )
+
+        # No conflicts — apply mutations
+        for nt in dataset_ctx.node_types:
+            existing = next((x for x in sc.node_types if x.name == nt.name), None)
+            if existing is None:
+                sc.node_types.append(
+                    SharedNodeType(
+                        name=nt.name,
+                        identity_key=nt.identity_key,
+                        maps_to=nt.maps_to,
+                        source_datasets=[dataset_ctx.dataset_id],
+                    )
                 )
+            else:
+                if dataset_ctx.dataset_id not in existing.source_datasets:
+                    existing.source_datasets.append(dataset_ctx.dataset_id)
 
-    for rt in dataset_ctx.relationship_types:
-        if rt.name in rel_index:
-            existing_canonical, existing_ds = rel_index[rt.name]
-            if existing_canonical != rt.maps_to:
-                raise MergeConflict(
-                    type="relationship",
-                    source_name=rt.name,
-                    existing_canonical=existing_canonical,
-                    proposed_canonical=rt.maps_to,
-                    existing_dataset=existing_ds,
-                    new_dataset=dataset_ctx.dataset_id,
+        for rt in dataset_ctx.relationship_types:
+            existing = next((x for x in sc.relationship_types if x.name == rt.name), None)
+            if existing is None:
+                sc.relationship_types.append(
+                    SharedRelationshipType(
+                        name=rt.name,
+                        maps_to=rt.maps_to,
+                        **{"from": rt.from_type, "to": rt.to_type},
+                        source_datasets=[dataset_ctx.dataset_id],
+                    )
                 )
+            else:
+                if dataset_ctx.dataset_id not in existing.source_datasets:
+                    existing.source_datasets.append(dataset_ctx.dataset_id)
 
-    # No conflicts — apply mutations
-    for nt in dataset_ctx.node_types:
-        existing = next((x for x in sc.node_types if x.name == nt.name), None)
-        if existing is None:
-            sc.node_types.append(
-                SharedNodeType(
-                    name=nt.name,
-                    identity_key=nt.identity_key,
-                    maps_to=nt.maps_to,
-                    source_datasets=[dataset_ctx.dataset_id],
-                )
-            )
-        else:
-            if dataset_ctx.dataset_id not in existing.source_datasets:
-                existing.source_datasets.append(dataset_ctx.dataset_id)
+        sc.version += 1
+        sc.updated_at = str(datetime.date.today())
 
-    for rt in dataset_ctx.relationship_types:
-        existing = next((x for x in sc.relationship_types if x.name == rt.name), None)
-        if existing is None:
-            sc.relationship_types.append(
-                SharedRelationshipType(
-                    name=rt.name,
-                    maps_to=rt.maps_to,
-                    **{"from": rt.from_type, "to": rt.to_type},
-                    source_datasets=[dataset_ctx.dataset_id],
-                )
-            )
-        else:
-            if dataset_ctx.dataset_id not in existing.source_datasets:
-                existing.source_datasets.append(dataset_ctx.dataset_id)
-
-    sc.version += 1
-    sc.updated_at = str(datetime.date.today())
-
-    _save_yaml(_shared_path(), _shared_to_dict(sc))
-    return sc
+        _save_yaml(_shared_path(), _shared_to_dict(sc))
+        return sc

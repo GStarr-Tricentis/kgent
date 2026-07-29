@@ -477,3 +477,78 @@ class TestMergeConflict:
         sc = cs.load_shared_context()
         assert sc.version == 1
         assert sc.node_types[0].maps_to == "ReusableStep"
+
+
+# ---------------------------------------------------------------------------
+# merge_into_shared — file locking
+# ---------------------------------------------------------------------------
+
+class TestMergeSharedLocking:
+    """Verify that merge_into_shared holds and releases an exclusive file lock."""
+
+    def test_lock_file_created_after_merge(self, tmp_path, monkeypatch):
+        """A .lock file sibling of shared_context.yaml is created during merge."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        ctx = context_store.DatasetContext(dataset_id="ds1")
+        context_store.merge_into_shared(ctx)
+
+        assert (tmp_path / "shared_context.lock").exists()
+
+    def test_lock_released_after_merge(self, tmp_path, monkeypatch):
+        """The exclusive lock is released when merge_into_shared returns normally."""
+        import fcntl
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        ctx = context_store.DatasetContext(dataset_id="ds1")
+        context_store.merge_into_shared(ctx)
+
+        # LOCK_EX | LOCK_NB raises BlockingIOError if the lock is still held;
+        # if it succeeds the lock was cleanly released.
+        lock_path = tmp_path / "shared_context.lock"
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+    def test_concurrent_merges_do_not_lose_data(self, tmp_path, monkeypatch):
+        """Five threads merging distinct datasets all survive; no type is silently dropped."""
+        import importlib
+        import threading
+        from graph_pipeline import context_store
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        importlib.reload(context_store)
+
+        errors: list[Exception] = []
+
+        def run_merge(ds_id: str, type_name: str) -> None:
+            try:
+                ctx = context_store.DatasetContext(
+                    dataset_id=ds_id,
+                    node_types=[
+                        context_store.DatasetNodeType(name=type_name, maps_to=type_name)
+                    ],
+                )
+                context_store.merge_into_shared(ctx)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=run_merge, args=(f"ds{i}", f"Type{i}"))
+            for i in range(5)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Merge raised: {errors}"
+        shared = context_store.load_shared_context()
+        present = {nt.name for nt in shared.node_types}
+        for i in range(5):
+            assert f"Type{i}" in present, f"Type{i} was lost in concurrent merge"
