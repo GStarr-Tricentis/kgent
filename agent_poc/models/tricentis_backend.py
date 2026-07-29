@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 
@@ -49,25 +50,22 @@ class TricentisBackend:
 
     async def setup(self) -> None:
         from tricentis_ai_client import TaisClient, TaisConfig
-        from tricentis_ai_client.exceptions import InteractiveAuthRequiredError
 
         config = TaisConfig()
         client = TaisClient(config)
         try:
             await client.authenticate(interactive=False)
-        except (InteractiveAuthRequiredError, Exception):
+        except Exception:
             print(
                 "\n[TAIS] Authentication required. "
                 "Follow the link below to sign in via SSO:\n",
                 file=sys.stderr,
                 flush=True,
             )
-            _real_stdout = sys.stdout
-            sys.stdout = sys.stderr
-            try:
+            # The TAIS client prints the device-flow URL to stdout; redirect it
+            # to stderr so it doesn't pollute captured output.
+            with contextlib.redirect_stdout(sys.stderr):
                 await client.authenticate(interactive=True)
-            finally:
-                sys.stdout = _real_stdout
         self._tais_client = client
         self._tais_config = config
 

@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-poc"
+name = "kgent"
 version = "0.1.0"
-description = "Synchronous open-weight LLM agent with tool use"
+description = "Async LLM agent with tool use and Neo4j graph query support"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.30",
@@ -33,7 +33,7 @@ dev = [
 ]
 
 [project.scripts]
-agent-poc = "main:main"
+kgent = "main:main"
 
 [tool.hatch.metadata]
 allow-direct-references = true
