@@ -18,36 +18,36 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Query the Neo4j knowledge graph in natural language")
     parser.add_argument("--question", required=True, help="Natural language question to answer")
     parser.add_argument("--model", default=None, help="Override model from config")
-    parser.add_argument("--config", default="agent_poc/config/config.yaml")
+    parser.add_argument("--config", default="kgent/config/config.yaml")
     parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
                         help="Model provider (default: local)")
     parser.add_argument("--cypher-tool", action="store_true",
                         help="Use query_graph tool instead of raw Neo4j MCP tools")
     args = parser.parse_args()
 
-    from agent_poc.config.loader import load_config, load_dotenv
+    from kgent.config.loader import load_config, load_dotenv
     load_dotenv()
     config = load_config(args.config)
     if args.model:
         config.model.model_name = args.model
 
     prompt_file = "text_to_cypher_tool.txt" if args.cypher_tool else "text_to_cypher.txt"
-    prompt_path = Path("agent_poc/agent/prompts") / prompt_file
+    prompt_path = Path("kgent/agent/prompts") / prompt_file
     if not prompt_path.exists():
         print(f"ERROR: system prompt not found at {prompt_path}", file=sys.stderr)
         sys.exit(1)
     system_prompt = prompt_path.read_text()
 
-    from agent_poc.agent.instrumentation import build_registry
-    from agent_poc.agent.runner import AgentRunner
-    from agent_poc.models.factory import make_backend
+    from kgent.agent.instrumentation import build_registry
+    from kgent.agent.runner import AgentRunner
+    from kgent.models.factory import make_backend
 
     skip_servers = frozenset({"neo4j"}) if args.cypher_tool else frozenset()
     registry = await build_registry(config, skip_servers=skip_servers)
 
     async with registry:
         if args.cypher_tool:
-            from agent_poc.tools.cypher_tool import make_cypher_tool
+            from kgent.tools.cypher_tool import make_cypher_tool
             registry.register(await make_cypher_tool(config))
 
         backend = await make_backend(config, provider=args.provider, model_override=args.model)

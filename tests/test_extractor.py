@@ -685,7 +685,7 @@ class MockBackend:
         self._content = response_content
 
     async def complete(self, messages, tools, response_format=None):
-        from agent_poc.agent.types import ModelResponse
+        from kgent.agent.types import ModelResponse
         return ModelResponse(
             content=self._content,
             tool_calls=[],
@@ -757,7 +757,7 @@ async def test_llm_inferred_extraction_source():
     """Ambiguous fields trigger an LLM call; resulting nodes are marked LLM_INFERRED."""
     from graph_pipeline.extractor import extract_all
     from graph_pipeline.models import ExtractionSource
-    from agent_poc.agent.backends.ollama import OllamaBackend
+    from kgent.agent.backends.ollama import OllamaBackend
 
     ctx = make_dataset_ctx(
         node_types=[{"name": "TestCase", "maps_to": "TestCase"}],

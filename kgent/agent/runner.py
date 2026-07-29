@@ -4,10 +4,10 @@ import asyncio
 import json
 import logging
 
-from agent_poc.agent.state import RunState
-from agent_poc.agent.types import ModelBackend, ToolResult
-from agent_poc.config.loader import AgentPocConfig
-from agent_poc.tools.registry import ToolRegistry
+from kgent.agent.state import RunState
+from kgent.agent.types import ModelBackend, ToolResult
+from kgent.config.loader import AgentPocConfig
+from kgent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 

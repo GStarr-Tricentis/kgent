@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from agent_poc.agent.runner import AgentRunner
-from agent_poc.agent.types import RegisteredTool, ToolSource
-from agent_poc.config.loader import (
+from kgent.agent.runner import AgentRunner
+from kgent.agent.types import RegisteredTool, ToolSource
+from kgent.config.loader import (
     AgentCoreConfig,
     AgentPocConfig,
     MCPConfig,
@@ -12,8 +12,8 @@ from agent_poc.config.loader import (
     SandboxConfig,
     ToolsConfig,
 )
-from agent_poc.tools.registry import ToolRegistry
-from agent_poc.tests.conftest import MockBackend, make_stop_response, make_tool_call_response
+from kgent.tools.registry import ToolRegistry
+from kgent.tests.conftest import MockBackend, make_stop_response, make_tool_call_response
 
 
 def _config(max_iterations: int = 5, window: int = 3) -> AgentPocConfig:

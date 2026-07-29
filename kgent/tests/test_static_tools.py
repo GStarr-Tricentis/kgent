@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_poc.tools.static.filesystem import LIST_DIR_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL
-from agent_poc.tools.static.shell import RUN_COMMAND_TOOL
+from kgent.tools.static.filesystem import LIST_DIR_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL
+from kgent.tools.static.shell import RUN_COMMAND_TOOL
 
 
 # --- read_file ---

@@ -2,10 +2,10 @@
 Integration tests — require a running Ollama instance.
 
 Run with:
-    pytest agent_poc/tests/integration/ -v -m integration
+    pytest kgent/tests/integration/ -v -m integration
 
 The default model is read from config.yaml. Override with:
-    AGENT_MODEL=llama3.1:8b pytest agent_poc/tests/integration/ -v -m integration
+    AGENT_MODEL=llama3.1:8b pytest kgent/tests/integration/ -v -m integration
 """
 from __future__ import annotations
 
@@ -15,17 +15,17 @@ from pathlib import Path
 
 import pytest
 
-from agent_poc.agent.runner import AgentRunner
-from agent_poc.config.loader import load_config
-from agent_poc.models.openai_compatible import OpenAICompatibleBackend
-from agent_poc.tools.generated import make_save_as_tool
-from agent_poc.tools.registry import ToolRegistry
-from agent_poc.tools.static.filesystem import LIST_DIR_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL
-from agent_poc.tools.static.python_exec import make_python_exec_tool
-from agent_poc.tools.static.shell import RUN_COMMAND_TOOL
+from kgent.agent.runner import AgentRunner
+from kgent.config.loader import load_config
+from kgent.models.openai_compatible import OpenAICompatibleBackend
+from kgent.tools.generated import make_save_as_tool
+from kgent.tools.registry import ToolRegistry
+from kgent.tools.static.filesystem import LIST_DIR_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL
+from kgent.tools.static.python_exec import make_python_exec_tool
+from kgent.tools.static.shell import RUN_COMMAND_TOOL
 
 
-CONFIG_PATH = "agent_poc/config/config.yaml"
+CONFIG_PATH = "kgent/config/config.yaml"
 
 
 def _make_runner(tmp_path: Path | None = None) -> AgentRunner:
@@ -34,7 +34,7 @@ def _make_runner(tmp_path: Path | None = None) -> AgentRunner:
     if model_override:
         config.model.model_name = model_override
 
-    system_prompt = Path("agent_poc/prompts/system.txt")
+    system_prompt = Path("kgent/prompts/system.txt")
     prompt_text = system_prompt.read_text() if system_prompt.exists() else ""
 
     backend = OpenAICompatibleBackend(config.model)
@@ -130,14 +130,14 @@ def test_demo4_custom_format_parser(tmp_path):
 
 @pytest.mark.integration
 def test_demo_save_as_tool_registers_generated_tool():
-    from agent_poc.agent.types import ToolSource
+    from kgent.agent.types import ToolSource
 
     config = load_config(CONFIG_PATH)
     model_override = os.environ.get("AGENT_MODEL")
     if model_override:
         config.model.model_name = model_override
 
-    prompt_text = Path("agent_poc/prompts/system.txt")
+    prompt_text = Path("kgent/prompts/system.txt")
     prompt_text = prompt_text.read_text() if prompt_text.exists() else ""
 
     backend = OpenAICompatibleBackend(config.model)

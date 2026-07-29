@@ -19,7 +19,7 @@ class MockBackend:
         self._content = response_content
 
     async def complete(self, messages, tools, response_format=None):
-        from agent_poc.agent.types import ModelResponse
+        from kgent.agent.types import ModelResponse
         return ModelResponse(
             content=self._content,
             tool_calls=[],
@@ -193,7 +193,7 @@ class TestProposeDatasetContext:
 
         class MultiMockBackend:
             async def complete(self, messages, tools, response_format=None):
-                from agent_poc.agent.types import ModelResponse
+                from kgent.agent.types import ModelResponse
                 content = responses[call_count[0]]
                 call_count[0] += 1
                 return ModelResponse(
@@ -222,7 +222,7 @@ class TestProposeDatasetContext:
 
         class MultiMockBackend:
             async def complete(self, messages, tools, response_format=None):
-                from agent_poc.agent.types import ModelResponse
+                from kgent.agent.types import ModelResponse
                 content = responses[call_count[0]]
                 call_count[0] += 1
                 return ModelResponse(
@@ -251,7 +251,7 @@ class TestProposeDatasetContext:
 
         class MultiMockBackend:
             async def complete(self, messages, tools, response_format=None):
-                from agent_poc.agent.types import ModelResponse
+                from kgent.agent.types import ModelResponse
                 content = responses[call_count[0]]
                 call_count[0] += 1
                 return ModelResponse(
@@ -276,7 +276,7 @@ async def test_propose_dataset_context_returns_valid_result():
     """Call a real model and assert the result is a structurally valid DatasetContext."""
     from graph_pipeline.context_store import DatasetContext, SharedContext
     from graph_pipeline.schema_discovery import propose_dataset_context
-    from agent_poc.agent.backends.ollama import OllamaBackend
+    from kgent.agent.backends.ollama import OllamaBackend
 
     shared_ctx = SharedContext()
     result = propose_dataset_context(

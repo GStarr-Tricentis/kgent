@@ -24,7 +24,7 @@ htmlcov/
 data/tokens.json
 
 # Local config (use config.yaml.example as a template)
-agent_poc/config/config.yaml
+kgent/config/config.yaml
 
 # macOS
 .DS_Store
@@ -39,6 +39,21 @@ context/datasets/
 context/shared_context.yaml
 
 
-# Benchmark outputs
+# Claude Code internal files
+.claude/
+
+# Test / source data (can be large)
+test_data/
+
+# Scratch scripts
+test_mantle.py
+
+# Local config snippets
+/config/
+
+# Benchmark outputs and query sets
 results*.csv
 benchmark_results.csv
+queries*.csv
+qwen*.csv
+mcpreconnect.csv

@@ -4,9 +4,9 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from agent_poc.agent.types import ModelBackend, ModelResponse, RegisteredTool, ToolCall, ToolResult, ToolSource
-from agent_poc.config.loader import AgentPocConfig
-from agent_poc.tools.registry import ToolRegistry
+from kgent.agent.types import ModelBackend, ModelResponse, RegisteredTool, ToolCall, ToolResult, ToolSource
+from kgent.config.loader import AgentPocConfig
+from kgent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +110,11 @@ async def build_registry(
     config: AgentPocConfig,
     skip_servers: frozenset[str] = frozenset(),
 ) -> TimingRegistry:
-    from agent_poc.tools.generated import make_save_as_tool
-    from agent_poc.tools.mcp_adapter import MCP_AVAILABLE, MCPAdapter
-    from agent_poc.tools.static.filesystem import LIST_DIR_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL
-    from agent_poc.tools.static.python_exec import make_python_exec_tool
-    from agent_poc.tools.static.shell import RUN_COMMAND_TOOL
+    from kgent.tools.generated import make_save_as_tool
+    from kgent.tools.mcp_adapter import MCP_AVAILABLE, MCPAdapter
+    from kgent.tools.static.filesystem import LIST_DIR_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL
+    from kgent.tools.static.python_exec import make_python_exec_tool
+    from kgent.tools.static.shell import RUN_COMMAND_TOOL
 
     registry = TimingRegistry()
     static_map = {

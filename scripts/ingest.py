@@ -54,19 +54,19 @@ async def main() -> None:
     parser.add_argument("--skip-review", action="store_true", help="Skip human review if canonical names unchanged")
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--config", default="agent_poc/config/config.yaml")
+    parser.add_argument("--config", default="kgent/config/config.yaml")
     parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
                         help="Model provider (default: local)")
     args = parser.parse_args()
 
-    from agent_poc.config.loader import load_config, load_dotenv
+    from kgent.config.loader import load_config, load_dotenv
     load_dotenv()
     config = load_config(args.config)
     gp = config.graph_pipeline
 
     file_path = args.file
     dataset_id = args.dataset_id or Path(file_path).stem
-    from agent_poc.models.factory import make_backend
+    from kgent.models.factory import make_backend
     backend = await make_backend(config, provider=args.provider, model_override=args.model)
     sample_size = args.sample_size or gp.default_sample_size
     batch_size = args.batch_size or gp.default_batch_size

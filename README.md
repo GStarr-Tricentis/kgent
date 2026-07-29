@@ -63,7 +63,7 @@ Results are flushed to the output CSV after every run, so you can `Ctrl+C` at an
 | `--models` | required | Comma-separated model names (Ollama tags, TAIS deployment names, or Bedrock model IDs) |
 | `--output` | `benchmark_results.csv` | Output CSV path |
 | `--reps` | `3` | Repetitions per query × model |
-| `--config` | `agent_poc/config/config.yaml` | Agent config path |
+| `--config` | `kgent/config/config.yaml` | Agent config path |
 | `--provider` | `local` | `local`, `tricentis`, or `bedrock` |
 | `--cypher-tool` | off | Use NLP-to-Cypher tool instead of raw Neo4j MCP tools |
 | `--no-graph` | off | Disable all graph access (straight-RAG baseline) |
@@ -142,7 +142,7 @@ python main.py --prompt "Use python_exec to compute the sum of the first 100 nat
 Agent writes and runs Python code, reads the output (`5050`), reports the answer.
 
 ### Demo 3 — MCP server tools
-Add a server to `agent_poc/config/config.yaml`:
+Add a server to `kgent/config/config.yaml`:
 ```yaml
 mcp:
   servers:
@@ -165,7 +165,7 @@ python main.py --prompt "Parse sample.dat — each line starts with ## and field
 ```
 Agent reads the file, recognises the format, writes a parser with `python_exec`, iterates on errors, and reports the result.
 
-## Config reference (`agent_poc/config/config.yaml`)
+## Config reference (`kgent/config/config.yaml`)
 
 ```yaml
 model:
@@ -242,9 +242,9 @@ On first run the pipeline will:
 | `--skip-review` | off | Skip the human review step if canonical names are unchanged |
 | `--sample-size` | `50` | Number of records to sample for schema discovery |
 | `--batch-size` | `500` | Neo4j write batch size |
-| `--config` | `agent_poc/config/config.yaml` | Path to config file |
+| `--config` | `kgent/config/config.yaml` | Path to config file |
 
-### Config (`agent_poc/config/config.yaml`)
+### Config (`kgent/config/config.yaml`)
 
 ```yaml
 graph_pipeline:
@@ -272,13 +272,13 @@ Generated context files (`context/datasets/`, `context/shared_context.yaml`) are
 
 ```bash
 # Unit tests (no Ollama required)
-pytest agent_poc/tests/ -v --ignore=agent_poc/tests/integration
+pytest kgent/tests/ -v --ignore=kgent/tests/integration
 
 # Integration tests (Ollama must be running)
-pytest agent_poc/tests/integration/ -v -m integration
+pytest kgent/tests/integration/ -v -m integration
 
 # Override model for integration tests
-AGENT_MODEL=llama3.1:8b pytest agent_poc/tests/integration/ -v -m integration
+AGENT_MODEL=llama3.1:8b pytest kgent/tests/integration/ -v -m integration
 ```
 
 ## Known limitations

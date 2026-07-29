@@ -6,7 +6,7 @@ import logging
 import anyio
 import anyio.abc
 
-from agent_poc.agent.types import RegisteredTool, ToolSource
+from kgent.agent.types import RegisteredTool, ToolSource
 
 logger = logging.getLogger(__name__)
 

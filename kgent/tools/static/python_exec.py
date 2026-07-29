@@ -5,8 +5,8 @@ import subprocess
 import sys
 import tempfile
 
-from agent_poc.agent.types import RegisteredTool, ToolSource
-from agent_poc.config.loader import SandboxConfig
+from kgent.agent.types import RegisteredTool, ToolSource
+from kgent.config.loader import SandboxConfig
 
 # Keys whose names contain any of these patterns are excluded from the
 # subprocess env to prevent leaking credentials into untrusted code.

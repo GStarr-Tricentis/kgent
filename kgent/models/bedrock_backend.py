@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from agent_poc.agent.types import ModelResponse, RegisteredTool, ToolCall
+from kgent.agent.types import ModelResponse, RegisteredTool, ToolCall
 
 
 class BedrockBackend:

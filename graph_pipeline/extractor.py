@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 
-from agent_poc.agent.types import ModelBackend
+from kgent.agent.types import ModelBackend
 from graph_pipeline.context_store import DatasetContext, HierarchyConfig, SharedContext
 from graph_pipeline.models import ExtractionSource, Node, Relationship
 

@@ -48,23 +48,23 @@ def _mcp_patches(session: AsyncMock):
         yield session
 
     return (
-        patch("agent_poc.tools.mcp_adapter.stdio_client", _fake_stdio),
-        patch("agent_poc.tools.mcp_adapter.ClientSession", _fake_cs),
+        patch("kgent.tools.mcp_adapter.stdio_client", _fake_stdio),
+        patch("kgent.tools.mcp_adapter.ClientSession", _fake_cs),
     )
 
 
 # ── import guard ──────────────────────────────────────────────────────────────
 
 def test_import_does_not_raise():
-    from agent_poc.tools.mcp_adapter import MCPAdapter, MCP_AVAILABLE  # noqa: F401
+    from kgent.tools.mcp_adapter import MCPAdapter, MCP_AVAILABLE  # noqa: F401
     assert isinstance(MCP_AVAILABLE, bool)
 
 
 # ── MCP_AVAILABLE = False ─────────────────────────────────────────────────────
 
 async def test_mcp_unavailable_connect_is_noop():
-    import agent_poc.tools.mcp_adapter as mod
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    import kgent.tools.mcp_adapter as mod
+    from kgent.tools.mcp_adapter import MCPAdapter
     original = mod.MCP_AVAILABLE
     try:
         mod.MCP_AVAILABLE = False
@@ -76,8 +76,8 @@ async def test_mcp_unavailable_connect_is_noop():
 
 
 async def test_mcp_unavailable_call_tool_returns_error_string():
-    import agent_poc.tools.mcp_adapter as mod
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    import kgent.tools.mcp_adapter as mod
+    from kgent.tools.mcp_adapter import MCPAdapter
     original = mod.MCP_AVAILABLE
     try:
         mod.MCP_AVAILABLE = False
@@ -92,7 +92,7 @@ async def test_mcp_unavailable_call_tool_returns_error_string():
 # ── connect() ─────────────────────────────────────────────────────────────────
 
 async def test_connect_populates_tools_correctly():
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.tools.mcp_adapter import MCPAdapter
     tools = [_mcp_tool("alpha"), _mcp_tool("beta"), _mcp_tool("gamma")]
     session = _make_session(tools)
     sc, cs = _mcp_patches(session)
@@ -104,8 +104,8 @@ async def test_connect_populates_tools_correctly():
 
 
 async def test_connect_sets_tool_source_to_mcp():
-    from agent_poc.agent.types import ToolSource
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.agent.types import ToolSource
+    from kgent.tools.mcp_adapter import MCPAdapter
     session = _make_session([_mcp_tool("t1")])
     sc, cs = _mcp_patches(session)
     with sc, cs:
@@ -116,7 +116,7 @@ async def test_connect_sets_tool_source_to_mcp():
 
 async def test_connect_raises_on_empty_tool_list():
     """RuntimeError when server returns no tools."""
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.tools.mcp_adapter import MCPAdapter
     session = _make_session([])
     sc, cs = _mcp_patches(session)
     with sc, cs:
@@ -129,7 +129,7 @@ async def test_connect_raises_on_empty_tool_list():
 
 async def test_call_tool_returns_expected_string():
     """call_tool() returns str(result.content)."""
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.tools.mcp_adapter import MCPAdapter
     session = _make_session([_mcp_tool("greet")], call_results=["hello world"])
     sc, cs = _mcp_patches(session)
     with sc, cs:
@@ -141,7 +141,7 @@ async def test_call_tool_returns_expected_string():
 
 async def test_call_tool_raises_on_broken_pipe():
     """BrokenPipeError propagates out of call_tool(); _mcp_loop owns reconnection."""
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.tools.mcp_adapter import MCPAdapter
     session = _make_session(
         [_mcp_tool("t1")],
         call_results=[BrokenPipeError("pipe broke")],
@@ -157,7 +157,7 @@ async def test_call_tool_raises_on_broken_pipe():
 
 async def test_call_tool_does_not_reconnect_on_non_transport_error():
     """ValueError from a tool propagates without triggering a reconnect."""
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.tools.mcp_adapter import MCPAdapter
     session = _make_session([_mcp_tool("t1")])
     session.call_tool = AsyncMock(side_effect=ValueError("bad input"))
     sc, cs = _mcp_patches(session)
@@ -174,7 +174,7 @@ async def test_call_tool_does_not_reconnect_on_non_transport_error():
 
 async def test_tool_callables_are_bound_to_correct_names():
     """Each registered async callable must invoke call_tool with its own tool name."""
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.tools.mcp_adapter import MCPAdapter
     tools = [_mcp_tool("alpha"), _mcp_tool("beta"), _mcp_tool("gamma")]
     session = _make_session(tools)
     sc, cs = _mcp_patches(session)
@@ -200,13 +200,13 @@ async def test_tool_callables_are_bound_to_correct_names():
 # ── disconnect / context manager ──────────────────────────────────────────────
 
 async def test_disconnect_before_connect_does_not_raise():
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.tools.mcp_adapter import MCPAdapter
     adapter = MCPAdapter("srv", "cmd", [])
     await adapter.disconnect()  # _tg is None — must be a no-op
 
 
 async def test_context_manager_cleans_up_on_exit():
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.tools.mcp_adapter import MCPAdapter
     session = _make_session([_mcp_tool("t1")])
     sc, cs = _mcp_patches(session)
     with sc, cs:
@@ -220,14 +220,14 @@ async def test_context_manager_cleans_up_on_exit():
 
 async def test_mcp_adapter_accepts_max_calls_constructor_param():
     """MCPAdapter.__init__ must accept a max_calls kwarg and store it as _max_calls."""
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.tools.mcp_adapter import MCPAdapter
     adapter = MCPAdapter("srv", "cmd", [], max_calls=50)
     assert adapter._max_calls == 50
 
 
 async def test_proactive_reconnect_fires_at_max_calls():
     """When _call_count reaches _max_calls, reconnect fires before the next call."""
-    from agent_poc.tools.mcp_adapter import MCPAdapter
+    from kgent.tools.mcp_adapter import MCPAdapter
     session = _make_session([_mcp_tool("t1")], call_results=["a", "b"])
     sc, cs = _mcp_patches(session)
     with sc, cs:
@@ -245,8 +245,8 @@ async def test_proactive_reconnect_fires_at_max_calls():
 
 async def test_build_registry_wires_max_calls_from_config():
     """build_registry must forward max_calls_before_reconnect from config to MCPAdapter."""
-    from agent_poc.agent.instrumentation import build_registry
-    from agent_poc.config.loader import (
+    from kgent.agent.instrumentation import build_registry
+    from kgent.config.loader import (
         AgentCoreConfig, AgentPocConfig, MCPConfig, MCPServerConfig,
         ModelConfig, ToolsConfig,
     )
@@ -274,8 +274,8 @@ async def test_build_registry_wires_max_calls_from_config():
             return []
 
     with (
-        patch("agent_poc.tools.mcp_adapter.MCP_AVAILABLE", True),
-        patch("agent_poc.tools.mcp_adapter.MCPAdapter", _FakeAdapter),
+        patch("kgent.tools.mcp_adapter.MCP_AVAILABLE", True),
+        patch("kgent.tools.mcp_adapter.MCPAdapter", _FakeAdapter),
     ):
         await build_registry(config)
 

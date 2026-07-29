@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 
-from agent_poc.agent.types import RegisteredTool, ToolSource
-from agent_poc.config.loader import SandboxConfig
-from agent_poc.tools.registry import ToolRegistry
-from agent_poc.tools.static.python_exec import run_python_sandbox
+from kgent.agent.types import RegisteredTool, ToolSource
+from kgent.config.loader import SandboxConfig
+from kgent.tools.registry import ToolRegistry
+from kgent.tools.static.python_exec import run_python_sandbox
 
 _SAVE_AS_TOOL_SCHEMA = {
     "type": "object",

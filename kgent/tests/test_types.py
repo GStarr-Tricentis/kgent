@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_poc.agent.types import (
+from kgent.agent.types import (
     ModelResponse,
     RegisteredTool,
     ToolCall,

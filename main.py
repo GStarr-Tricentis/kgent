@@ -47,7 +47,7 @@ async def _mcp_loop(
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Open-weight LLM agent")
-    parser.add_argument("--config", default="agent_poc/config/config.yaml")
+    parser.add_argument("--config", default="kgent/config/config.yaml")
     parser.add_argument("--model", default=None, help="Override model_name from config")
     parser.add_argument("--prompt", default=None, help="Single prompt (non-interactive)")
     parser.add_argument("--debug", action="store_true")
@@ -59,20 +59,20 @@ async def main() -> None:
                         help="Path to a JSONL dump of the source data. Tells the agent the file "
                              "exists and that it can build tools (via save_as_tool) to search it.")
     args = parser.parse_args()
-    from agent_poc.config.loader import load_dotenv
+    from kgent.config.loader import load_dotenv
     load_dotenv()
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    from agent_poc.config.loader import load_config
-    from agent_poc.agent.instrumentation import build_registry
-    from agent_poc.agent.runner import AgentRunner
-    from agent_poc.models.factory import make_backend
+    from kgent.config.loader import load_config
+    from kgent.agent.instrumentation import build_registry
+    from kgent.agent.runner import AgentRunner
+    from kgent.models.factory import make_backend
 
     config = load_config(args.config)
     if args.model:
         config.model.model_name = args.model
-    system_prompt_path = Path("agent_poc/prompts/system.txt")
+    system_prompt_path = Path("kgent/prompts/system.txt")
     system_prompt = system_prompt_path.read_text() if system_prompt_path.exists() else ""
 
     skip_servers = frozenset({"neo4j"}) if args.cypher_tool else frozenset()
@@ -85,9 +85,9 @@ async def main() -> None:
         ]
         try:
             if args.cypher_tool:
-                from agent_poc.tools.cypher_tool import make_cypher_tool
+                from kgent.tools.cypher_tool import make_cypher_tool
                 registry.register(await make_cypher_tool(config))
-                graph_prompt = Path("agent_poc/agent/prompts/text_to_cypher_tool.txt").read_text()
+                graph_prompt = Path("kgent/agent/prompts/text_to_cypher_tool.txt").read_text()
                 system_prompt = system_prompt + ("\n\n" if system_prompt else "") + graph_prompt
 
             if args.raw_data:

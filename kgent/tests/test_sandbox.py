@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-from agent_poc.config.loader import SandboxConfig
-from agent_poc.tools.static.python_exec import run_python_sandbox
+from kgent.config.loader import SandboxConfig
+from kgent.tools.static.python_exec import run_python_sandbox
 
 
 def _cfg(**kwargs) -> SandboxConfig:
@@ -110,9 +110,9 @@ def test_home_is_tmpdir():
 
 def test_input_injection():
     """Generated tool code must be able to read _INPUT."""
-    from agent_poc.agent.types import ToolSource
-    from agent_poc.tools.generated import make_save_as_tool
-    from agent_poc.tools.registry import ToolRegistry
+    from kgent.agent.types import ToolSource
+    from kgent.tools.generated import make_save_as_tool
+    from kgent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     save_tool = make_save_as_tool(registry, _cfg())
@@ -141,8 +141,8 @@ def test_input_injection():
 
 def test_input_injection_numeric():
     """_INPUT values of non-string types must survive serialisation round-trip."""
-    from agent_poc.tools.generated import make_save_as_tool
-    from agent_poc.tools.registry import ToolRegistry
+    from kgent.tools.generated import make_save_as_tool
+    from kgent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     save_tool = make_save_as_tool(registry, _cfg())
@@ -162,8 +162,8 @@ def test_input_injection_numeric():
 # --- save_as_tool registration ---
 
 def test_save_as_tool_returns_confirmation():
-    from agent_poc.tools.generated import make_save_as_tool
-    from agent_poc.tools.registry import ToolRegistry
+    from kgent.tools.generated import make_save_as_tool
+    from kgent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     save_tool = make_save_as_tool(registry, _cfg())
@@ -179,8 +179,8 @@ def test_save_as_tool_returns_confirmation():
 
 def test_save_as_tool_overwrites_existing():
     """Registering a tool with an existing name replaces the old one."""
-    from agent_poc.tools.generated import make_save_as_tool
-    from agent_poc.tools.registry import ToolRegistry
+    from kgent.tools.generated import make_save_as_tool
+    from kgent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     save_tool = make_save_as_tool(registry, _cfg())

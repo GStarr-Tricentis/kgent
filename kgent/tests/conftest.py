@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent_poc.agent.types import ModelResponse, ToolCall
+from kgent.agent.types import ModelResponse, ToolCall
 
 
 class MockBackend:

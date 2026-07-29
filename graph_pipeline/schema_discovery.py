@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from agent_poc.agent.types import ModelBackend
+from kgent.agent.types import ModelBackend
 from graph_pipeline.context_store import (
     AssociationConfig,
     DatasetContext,

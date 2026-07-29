@@ -6,8 +6,8 @@ import re
 import time
 from pathlib import Path
 
-from agent_poc.agent.types import RegisteredTool, ToolSource
-from agent_poc.config.loader import AgentPocConfig
+from kgent.agent.types import RegisteredTool, ToolSource
+from kgent.config.loader import AgentPocConfig
 
 _PROMPT_PATH = Path(__file__).parent.parent / "agent" / "prompts" / "nlp_to_cypher.txt"
 
@@ -186,7 +186,7 @@ async def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
     raw_model = config.cypher_tool.model
     resolved_model = (raw_model if raw_model and "${" not in raw_model else "") or config.model.model_name
 
-    from agent_poc.models.factory import make_backend
+    from kgent.models.factory import make_backend
     backend = await make_backend(
         tool_config,
         provider=config.cypher_tool.provider,

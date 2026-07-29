@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from agent_poc.agent.types import RegisteredTool, ToolCall, ToolSource
-from agent_poc.tools.registry import ToolRegistry
+from kgent.agent.types import RegisteredTool, ToolCall, ToolSource
+from kgent.tools.registry import ToolRegistry
 
 
 def _tool(name: str, fn, timeout: float = 30.0) -> RegisteredTool:

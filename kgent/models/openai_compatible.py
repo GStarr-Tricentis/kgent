@@ -5,8 +5,8 @@ import json
 import openai
 from openai import AsyncOpenAI
 
-from agent_poc.agent.types import ModelResponse, RegisteredTool, ToolCall
-from agent_poc.config.loader import ModelConfig
+from kgent.agent.types import ModelResponse, RegisteredTool, ToolCall
+from kgent.config.loader import ModelConfig
 
 
 def _tools_payload(tools: list[RegisteredTool]) -> list[dict]:

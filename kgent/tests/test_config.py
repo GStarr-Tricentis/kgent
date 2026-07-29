@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from agent_poc.config.loader import load_config
+from kgent.config.loader import load_config
 
 
-CONFIG_PATH = "agent_poc/config/config.yaml"
+CONFIG_PATH = "kgent/config/config.yaml"
 
 
 def test_load_config_model_name():

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent_poc.agent.types import ToolResult
+from kgent.agent.types import ToolResult
 
 
 class RunState(BaseModel):

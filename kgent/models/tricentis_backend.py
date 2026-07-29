@@ -8,7 +8,7 @@ import sys
 import openai
 from openai import AsyncOpenAI
 
-from agent_poc.agent.types import ModelResponse, RegisteredTool, ToolCall
+from kgent.agent.types import ModelResponse, RegisteredTool, ToolCall
 
 
 def _tools_payload(tools: list[RegisteredTool]) -> list[dict]:

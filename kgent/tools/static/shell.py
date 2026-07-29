@@ -3,7 +3,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 
-from agent_poc.agent.types import RegisteredTool, ToolSource
+from kgent.agent.types import RegisteredTool, ToolSource
 
 MAX_OUTPUT = 8192
 DEFAULT_TIMEOUT = 30

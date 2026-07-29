@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from agent_poc.agent.types import ModelBackend
-from agent_poc.config.loader import AgentPocConfig
-from agent_poc.models.openai_compatible import OpenAICompatibleBackend
+from kgent.agent.types import ModelBackend
+from kgent.config.loader import AgentPocConfig
+from kgent.models.openai_compatible import OpenAICompatibleBackend
 
 
 async def make_backend(
@@ -16,7 +16,7 @@ async def make_backend(
     if provider == "local":
         return OpenAICompatibleBackend(config.model)
     if provider == "tricentis":
-        from agent_poc.models.tricentis_backend import TricentisBackend
+        from kgent.models.tricentis_backend import TricentisBackend
         deployment = model_override or config.tricentis.deployment
         if not deployment:
             raise ValueError(
@@ -25,7 +25,7 @@ async def make_backend(
             )
         return await TricentisBackend.create(deployment=deployment, temperature=config.model.temperature)
     if provider == "bedrock":
-        from agent_poc.models.bedrock_backend import BedrockBackend
+        from kgent.models.bedrock_backend import BedrockBackend
         model_id = model_override or config.bedrock.model_id
         if not model_id:
             raise ValueError(

@@ -14,15 +14,15 @@ import anyio
 # Ensure project root is on sys.path when run directly
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent_poc.config.loader import load_config, load_dotenv
+from kgent.config.loader import load_config, load_dotenv
 
 load_dotenv()
 
-from agent_poc.agent.instrumentation import TokenUsage, TrackingBackend, build_registry
-from agent_poc.agent.runner import AgentRunner
-from agent_poc.models.factory import make_backend
+from kgent.agent.instrumentation import TokenUsage, TrackingBackend, build_registry
+from kgent.agent.runner import AgentRunner
+from kgent.models.factory import make_backend
 
-SYSTEM_PROMPT_PATH = Path("agent_poc/prompts/system.txt")
+SYSTEM_PROMPT_PATH = Path("kgent/prompts/system.txt")
 
 OUTPUT_FIELDS = [
     "run_id", "model", "use_case", "query_id", "query", "rep",
@@ -64,7 +64,7 @@ async def main() -> None:
     )
     parser.add_argument("--output", default="benchmark_results.csv", help="Output CSV path")
     parser.add_argument("--reps", type=int, default=3, help="Repetitions per query×model")
-    parser.add_argument("--config", default="agent_poc/config/config.yaml", help="Agent config path")
+    parser.add_argument("--config", default="kgent/config/config.yaml", help="Agent config path")
     parser.add_argument("--provider", default="local", choices=["local", "tricentis", "bedrock"],
                         help="Model provider (default: local)")
     parser.add_argument("--cypher-tool", action="store_true",
@@ -84,7 +84,7 @@ async def main() -> None:
     config = load_config(args.config)
     system_prompt = SYSTEM_PROMPT_PATH.read_text() if SYSTEM_PROMPT_PATH.exists() else ""
     if args.cypher_tool:
-        graph_path = Path("agent_poc/agent/prompts/text_to_cypher_tool.txt")
+        graph_path = Path("kgent/agent/prompts/text_to_cypher_tool.txt")
         if graph_path.exists():
             system_prompt = system_prompt + ("\n\n" if system_prompt else "") + graph_path.read_text()
 
@@ -125,7 +125,7 @@ async def main() -> None:
             registry = await build_registry(config, skip_servers=skip)
             async with registry:
                 if graph_mode == "cypher_tool":
-                    from agent_poc.tools.cypher_tool import make_cypher_tool
+                    from kgent.tools.cypher_tool import make_cypher_tool
                     registry.register(await make_cypher_tool(config))
 
                 for row in queries:
