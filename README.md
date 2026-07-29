@@ -7,7 +7,7 @@ A tool-using agent that runs against any OpenAI-compatible local model server (O
 **Local provider (default):**
 - Python 3.11+
 - [Ollama](https://ollama.ai) installed and running (`ollama serve`)
-- A pulled model — `ollama pull qwen2.5:7b` is the default
+- A pulled model — `ollama pull qwen3:8b` is the default
 
 **Tricentis cloud provider:**
 - Python 3.11+
@@ -24,9 +24,6 @@ A tool-using agent that runs against any OpenAI-compatible local model server (O
 ```bash
 # Core only
 pip install -e .
-
-# With Streamlit UI
-pip install -e ".[ui]"
 
 # With MCP server support
 pip install -e ".[mcp]"
@@ -46,23 +43,6 @@ pip install -e ".[bedrock]"
 > **Note:** `tricentis-ai-client` declares `requires-python = ">=3.13"` but runs fine on 3.11.
 > The `--override-requires-python` flag bypasses that metadata check.
 
-## Streamlit UI
-
-A web UI with two tabs: **Chat** and **Benchmark**.
-
-```bash
-pip install -e ".[ui]"
-streamlit run ui/app.py
-```
-
-### Chat tab
-- **Left panel (70%)**: chat history and prompt input
-- **Right panel (30%)**: tool call cards with args, output, and elapsed time, plus a run summary (iterations, finish reason, wall time, token counts)
-- Model dropdown populated from `ollama list`
-
-### Benchmark tab
-Upload a queries CSV, select one or more models, set repetitions, and click **Run Benchmark**. Results appear as a table when the run completes, with a **Download CSV** button.
-
 ## Benchmark CLI
 
 Run a set of queries across multiple models from the command line:
@@ -80,10 +60,14 @@ Results are flushed to the output CSV after every run, so you can `Ctrl+C` at an
 | Flag | Default | Description |
 |---|---|---|
 | `--queries` | required | Path to input CSV |
-| `--models` | required | Comma-separated model names |
+| `--models` | required | Comma-separated model names (Ollama tags, TAIS deployment names, or Bedrock model IDs) |
 | `--output` | `benchmark_results.csv` | Output CSV path |
 | `--reps` | `3` | Repetitions per query × model |
 | `--config` | `agent_poc/config/config.yaml` | Agent config path |
+| `--provider` | `local` | `local`, `tricentis`, or `bedrock` |
+| `--cypher-tool` | off | Use NLP-to-Cypher tool instead of raw Neo4j MCP tools |
+| `--no-graph` | off | Disable all graph access (straight-RAG baseline) |
+| `--raw-data` | — | Path to a JSONL source data dump; enables `save_as_tool` |
 
 ### Queries CSV format
 
@@ -109,12 +93,12 @@ id,use_case,query
 
 One row per `query × model × rep`:
 
-`run_id`, `model`, `use_case`, `query_id`, `query`, `rep`, `finish_reason`, `iterations`, `wall_time_s`, `prompt_tokens`, `response_tokens`, `total_tokens`, `num_tool_calls`, `tool_names`, `tool_latencies_ms`, `mean_tool_latency_ms`, `response`, `error`
+`run_id`, `model`, `use_case`, `query_id`, `query`, `rep`, `graph_mode`, `finish_reason`, `iterations`, `wall_time_s`, `prompt_tokens`, `response_tokens`, `total_tokens`, `num_tool_calls`, `tool_names`, `tool_latencies_ms`, `mean_tool_latency_ms`, `response`, `error`, `provider`, `raw_data_file`
 
 ## Quick start
 
 ```bash
-ollama pull qwen2.5:7b
+ollama pull qwen3:8b
 python main.py --prompt "list the files in the current directory"
 ```
 
@@ -188,7 +172,7 @@ model:
   provider: local           # "local" | "tricentis" | "bedrock"
   base_url: http://localhost:11434/v1
   api_key: ollama           # required by OpenAI SDK; value ignored by Ollama
-  model_name: qwen2.5:7b
+  model_name: qwen3:8b
   temperature: 0.0
 
 agent:
@@ -300,6 +284,5 @@ AGENT_MODEL=llama3.1:8b pytest agent_poc/tests/integration/ -v -m integration
 ## Known limitations
 
 - **No true network isolation on macOS** — the sandbox subprocess runs with the same network access as the parent. Blocking outbound connections requires a firewall rule or container.
-- **No MCP reconnect on failure** — MCP adapters connect once at startup and are reused for the life of the registry. If an MCP subprocess dies mid-run, there is no automatic reconnect; subsequent calls to that tool will fail.
 - **Shell tool has no safelist** — `shell` runs arbitrary commands as the current user. Intended for local/trusted use only.
 - **Generated tool code runs in sandbox** — only stdlib is available; third-party packages installed in the venv are not accessible from inside `python_exec`.

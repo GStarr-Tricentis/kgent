@@ -129,5 +129,9 @@ async def main() -> None:
             await asyncio.gather(*loop_tasks, return_exceptions=True)
 
 
-if __name__ == "__main__":
+def run() -> None:
     anyio.run(main)
+
+
+if __name__ == "__main__":
+    run()
