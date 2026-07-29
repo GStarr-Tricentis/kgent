@@ -8,7 +8,6 @@ model:
 agent:
   max_iterations: 20
   tool_timeout_seconds: 30
-  repeated_call_window: 3
 
 tools:
   static:
