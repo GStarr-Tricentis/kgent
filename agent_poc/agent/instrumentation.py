@@ -131,7 +131,10 @@ async def build_registry(
         for srv in config.mcp.servers:
             if srv.name in skip_servers:
                 continue
-            adapter = MCPAdapter(srv.name, srv.command, srv.args, srv.expanded_env())
+            adapter = MCPAdapter(
+                srv.name, srv.command, srv.args, srv.expanded_env(),
+                max_calls=srv.max_calls_before_reconnect,
+            )
             await adapter.connect()
             registry.register_adapter(adapter)
             for t in adapter.list_tools():

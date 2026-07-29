@@ -13,6 +13,8 @@ import os
 import sys
 from pathlib import Path
 
+import anyio
+
 # Ensure project root is importable regardless of working directory
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -288,4 +290,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main)

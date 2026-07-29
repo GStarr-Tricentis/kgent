@@ -183,25 +183,8 @@ class TricentisBackend:
             assistant_message=assistant_message,
         )
 
-    async def _reauthenticate(self) -> None:
-        async with self._auth_lock:
-            await self._tais_client.authenticate(interactive=False)
-            self._client = AsyncOpenAI(
-                base_url=f"{self._tais_config.gateway_url}/api/v1/hub-service/openai/deployments/{self._deployment}",
-                api_key=self._fresh_token(),
-                default_headers={
-                    "x-product-name": self._tais_config.product_name,
-                    "x-tenant-name": self._tais_config.tenant_name,
-                },
-            )
-
-    async def _complete_openai(
-        self,
-        messages: list[dict],
-        tools: list[RegisteredTool],
-        response_format: dict | None = None,
-    ) -> ModelResponse:
-        self._client = AsyncOpenAI(
+    def _make_openai_client(self) -> AsyncOpenAI:
+        return AsyncOpenAI(
             base_url=f"{self._tais_config.gateway_url}/api/v1/hub-service/openai/deployments/{self._deployment}",
             api_key=self._fresh_token(),
             default_headers={
@@ -210,11 +193,23 @@ class TricentisBackend:
             },
         )
 
+    async def _reauthenticate(self) -> None:
+        async with self._auth_lock:
+            await self._tais_client.authenticate(interactive=False)
+
+    async def _complete_openai(
+        self,
+        messages: list[dict],
+        tools: list[RegisteredTool],
+        response_format: dict | None = None,
+    ) -> ModelResponse:
+        client = self._make_openai_client()
+
         tool_payload = _tools_payload(tools)
         tools_param = tool_payload if tool_payload else openai.NOT_GIVEN
 
         try:
-            response = await self._client.chat.completions.create(
+            response = await client.chat.completions.create(
                 model=self._deployment,
                 messages=messages,
                 tools=tools_param,
@@ -222,7 +217,8 @@ class TricentisBackend:
             )
         except (openai.AuthenticationError, openai.PermissionDeniedError):
             await self._reauthenticate()
-            response = await self._client.chat.completions.create(
+            client = self._make_openai_client()
+            response = await client.chat.completions.create(
                 model=self._deployment,
                 messages=messages,
                 tools=tools_param,

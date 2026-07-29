@@ -99,11 +99,16 @@ def _fetch_schema(session, budget: int = 1900) -> str:
     return schema_str
 
 
-async def _get_cached_schema(session, uri: str, budget: int, ttl: float, cache: dict) -> str:
+async def _get_cached_schema(driver, uri: str, budget: int, ttl: float, cache: dict) -> str:
     entry = cache.get(uri)
     if entry is not None and time.monotonic() < entry[1]:
         return entry[0]
-    schema_str = await asyncio.to_thread(_fetch_schema, session, budget)
+
+    def _sync():
+        with driver.session() as s:
+            return _fetch_schema(s, budget)
+
+    schema_str = await asyncio.to_thread(_sync)
     cache[uri] = (schema_str, time.monotonic() + ttl)
     return schema_str
 
@@ -200,13 +205,12 @@ async def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
             password = os.environ["NEO4J_PASSWORD"]
             driver = GraphDatabase.driver(uri, auth=(username, password))
 
-            with driver.session() as session:
-                schema_str = await _get_cached_schema(
-                    session, uri,
-                    budget=config.cypher_tool.schema_budget,
-                    ttl=config.cypher_tool.schema_ttl_seconds,
-                    cache=schema_cache,
-                )
+            schema_str = await _get_cached_schema(
+                driver, uri,
+                budget=config.cypher_tool.schema_budget,
+                ttl=config.cypher_tool.schema_ttl_seconds,
+                cache=schema_cache,
+            )
 
             configured_path = config.cypher_tool.prompt_template
             prompt_path = (

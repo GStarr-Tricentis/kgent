@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from time import perf_counter
 
+import anyio
+
 # Ensure project root is on sys.path when run directly
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -18,6 +20,7 @@ load_dotenv()
 
 from agent_poc.agent.instrumentation import TokenUsage, TrackingBackend, build_registry
 from agent_poc.agent.runner import AgentRunner
+from agent_poc.models.factory import make_backend
 
 SYSTEM_PROMPT_PATH = Path("agent_poc/prompts/system.txt")
 
@@ -118,6 +121,7 @@ async def main() -> None:
             else:
                 skip = frozenset()
 
+            raw_backend = await make_backend(config, provider=args.provider, model_override=model)
             registry = await build_registry(config, skip_servers=skip)
             async with registry:
                 if graph_mode == "cypher_tool":
@@ -133,11 +137,7 @@ async def main() -> None:
                         run_id += 1
                         registry.reset()
                         usage = TokenUsage()
-                        from agent_poc.models.factory import make_backend
-                        backend = TrackingBackend(
-                            await make_backend(config, provider=args.provider, model_override=model),
-                            usage,
-                        )
+                        backend = TrackingBackend(raw_backend, usage)
                         runner = AgentRunner(
                             backend=backend,
                             registry=registry,
@@ -206,4 +206,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main)
