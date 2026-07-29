@@ -1,6 +1,6 @@
 # kgent
 
-A synchronous tool-using agent that runs against any OpenAI-compatible local model server (Ollama, llama.cpp, vLLM, etc.), the Tricentis AI Service (TAIS) cloud, or AWS Bedrock.
+A tool-using agent that runs against any OpenAI-compatible local model server (Ollama, llama.cpp, vLLM, etc.), the Tricentis AI Service (TAIS) cloud, or AWS Bedrock.
 
 ## Prerequisites
 
