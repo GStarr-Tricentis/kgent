@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from kgent.agent.types import RegisteredTool, ToolSource
 from kgent.config.loader import AgentPocConfig
@@ -195,7 +198,7 @@ async def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
 
     async def _query_graph(args: dict) -> str:
         question: str = args["question"]
-        print(f"[cypher_tool] question received: {question!r}", flush=True)
+        logger.info("question received: %r", question)
         driver = None
         try:
             from neo4j import GraphDatabase
@@ -236,7 +239,7 @@ async def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
             # This is a prompt-correction loop — sends different content each time.
             unknown = _extract_labels(cypher) - _known_labels(schema_str)
             if unknown:
-                print(f"[cypher_tool] unknown labels {unknown}, retrying", flush=True)
+                logger.info("unknown labels %s, retrying", sorted(unknown))
                 correction = (
                     f"\n\nCORRECTION: The labels {sorted(unknown)} do not exist in the schema. "
                     f"Valid labels are: {sorted(_known_labels(schema_str))}. "
@@ -267,7 +270,7 @@ async def make_cypher_tool(config: AgentPocConfig) -> RegisteredTool:
                 records = await _run_query(cypher)
             except Exception as cypher_exc:
                 err = _trim_neo4j_error(cypher_exc)
-                print(f"[cypher_tool] Cypher error, retrying: {err}", flush=True)
+                logger.info("Cypher error, retrying: %s", err)
                 # Prompt-correction loop — appends the error so the model can rewrite.
                 messages = messages + [
                     {"role": "assistant", "content": response.content},

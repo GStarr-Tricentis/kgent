@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import sys
 
 import openai
 from openai import AsyncOpenAI
 
 from kgent.agent.types import ModelResponse, RegisteredTool, ToolCall
+
+logger = logging.getLogger(__name__)
 
 
 def _tools_payload(tools: list[RegisteredTool]) -> list[dict]:
@@ -56,11 +59,9 @@ class TricentisBackend:
         try:
             await client.authenticate(interactive=False)
         except Exception:
-            print(
+            logger.warning(
                 "\n[TAIS] Authentication required. "
-                "Follow the link below to sign in via SSO:\n",
-                file=sys.stderr,
-                flush=True,
+                "Follow the link below to sign in via SSO:\n"
             )
             # The TAIS client prints the device-flow URL to stdout; redirect it
             # to stderr so it doesn't pollute captured output.
