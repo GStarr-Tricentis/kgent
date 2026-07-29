@@ -47,7 +47,7 @@ def _counters_from_summary(summary) -> dict[str, int]:
     }
 
 
-def _run_batch(
+async def _run_batch(
     session,
     statements: list[tuple[str, dict]],
     batch_index: int,
@@ -61,13 +61,14 @@ def _run_batch(
     """
     tx = None
     try:
-        tx = session.begin_transaction()
+        tx = await session.begin_transaction()
         total_created = 0
         for cypher, params in statements:
-            summary = tx.run(cypher, **params).consume()
+            _result = await tx.run(cypher, **params)
+            summary = await _result.consume()
             counts = _counters_from_summary(summary)
             total_created += counts.get(count_key_created, 0)
-        tx.commit()
+        await tx.commit()
 
         total_matched = len(statements) - total_created
         setattr(result, count_key_created, getattr(result, count_key_created) + total_created)
@@ -76,7 +77,7 @@ def _run_batch(
     except Exception as exc:
         if tx is not None:
             try:
-                tx.rollback()
+                await tx.rollback()
             except Exception:
                 pass
         error_msg = f"Batch {batch_index} failed: {exc}"
@@ -89,23 +90,23 @@ def _run_batch(
 # Public API
 # ---------------------------------------------------------------------------
 
-def create_constraints(labels: list[str], driver) -> None:
+async def create_constraints(labels: list[str], driver) -> None:
     """Create uniqueness constraints for all node labels.
 
     Raises on failure — do not attempt writes without constraints in place.
     """
     statements = generate_constraint_statements(labels)
-    with driver.session() as session:
+    async with driver.session() as session:
         for stmt in statements:
             try:
-                session.run(stmt)
+                await session.run(stmt)
             except Exception as exc:
                 raise RuntimeError(
                     f"Failed to create constraint for statement '{stmt}': {exc}"
                 ) from exc
 
 
-def write_nodes(
+async def write_nodes(
     nodes: list[Node],
     driver,
     batch_size: int = 500,
@@ -118,9 +119,9 @@ def write_nodes(
     statements = [generate_node_merge(n) for n in nodes]
     batches = [statements[i : i + batch_size] for i in range(0, len(statements), batch_size)]
 
-    with driver.session() as session:
+    async with driver.session() as session:
         for batch_index, batch in enumerate(batches):
-            _run_batch(
+            await _run_batch(
                 session,
                 batch,
                 batch_index,
@@ -132,7 +133,7 @@ def write_nodes(
     return result
 
 
-def write_relationships(
+async def write_relationships(
     rels: list[Relationship],
     driver,
     batch_size: int = 500,
@@ -158,9 +159,9 @@ def write_relationships(
     statements = [generate_relationship_merge(r) for r in rels]
     batches = [statements[i : i + batch_size] for i in range(0, len(statements), batch_size)]
 
-    with driver.session() as session:
+    async with driver.session() as session:
         for batch_index, batch in enumerate(batches):
-            _run_batch(
+            await _run_batch(
                 session,
                 batch,
                 batch_index,
@@ -172,7 +173,7 @@ def write_relationships(
     return result
 
 
-def write_all(
+async def write_all(
     nodes: list[Node],
     rels: list[Relationship],
     driver,
@@ -188,13 +189,13 @@ def write_all(
     """
     labels = list({n.label for n in nodes})
     if labels:
-        create_constraints(labels, driver)
+        await create_constraints(labels, driver)
 
     result = WriteResult()
-    node_result = write_nodes(nodes, driver, batch_size=batch_size)
+    node_result = await write_nodes(nodes, driver, batch_size=batch_size)
     result.merge(node_result)
 
-    rel_result = write_relationships(rels, driver, batch_size=batch_size)
+    rel_result = await write_relationships(rels, driver, batch_size=batch_size)
     result.merge(rel_result)
 
     return result

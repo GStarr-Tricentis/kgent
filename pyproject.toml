@@ -44,6 +44,7 @@ packages = ["kgent", "graph_pipeline"]
 [tool.pytest.ini_options]
 testpaths = ["kgent/tests", "tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "module"
 markers = [
     "integration: requires live external services like Neo4j (pass --integration to enable)",
     "llm: requires a live LLM (pass --llm to enable)",

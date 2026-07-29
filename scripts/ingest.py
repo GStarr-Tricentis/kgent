@@ -204,7 +204,7 @@ async def main() -> None:
         if not password:
             print("ERROR: NEO4J_PASSWORD not set in environment or .env file", file=sys.stderr)
             sys.exit(1)
-        driver = _neo4j.GraphDatabase.driver(uri, auth=(username, password))
+        driver = _neo4j.AsyncGraphDatabase.driver(uri, auth=(username, password))
 
     integrity_errors = check_referential_integrity(nodes, rels, driver=driver)
     dangling = [e for e in integrity_errors if e.severity == "error"]
@@ -249,7 +249,7 @@ async def main() -> None:
 
     if not args.dry_run:
         from graph_pipeline.neo4j_writer import write_all
-        result = write_all(nodes, rels, driver, batch_size=batch_size)
+        result = await write_all(nodes, rels, driver, batch_size=batch_size)
         _indent(f"{len(nodes)} nodes ({result.nodes_created} created, {result.nodes_matched} matched)")
         _indent(f"{len(rels)} relationships ({result.relationships_created} created, {result.relationships_matched} matched)")
         fatal_errors = [e for e in result.errors if not e.startswith("Skipping relationship")]
@@ -259,9 +259,9 @@ async def main() -> None:
                 _indent(f"{prefix} {err}")
         if fatal_errors:
             print("\nERROR: write errors occurred.", file=sys.stderr)
-            driver.close()
+            await driver.close()
             sys.exit(1)
-        driver.close()
+        await driver.close()
     else:
         _indent("(dry run — no data written)")
 
