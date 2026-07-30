@@ -37,6 +37,7 @@ kgent/config/config.yaml
 # Generated graph pipeline context (runtime artifacts, not code)
 context/datasets/
 context/shared_context.yaml
+context/shared_context.lock
 
 
 # Claude Code internal files
