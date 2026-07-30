@@ -40,7 +40,7 @@ class SpotCheckReport:
 # Public API
 # ---------------------------------------------------------------------------
 
-def check_referential_integrity(
+async def check_referential_integrity(
     nodes: list[Node],
     relationships: list[Relationship],
     driver=None,
@@ -83,12 +83,12 @@ def check_referential_integrity(
     # Live mode: check Neo4j for any missing IDs
     found_in_neo4j: set[str] = set()
     try:
-        with driver.session() as session:
-            result = session.run(
+        async with driver.session() as session:
+            result = await session.run(
                 "UNWIND $ids AS id MATCH (n {id: id}) RETURN n.id AS id",
                 ids=list(missing_ids.keys()),
             )
-            for record in result.data():
+            for record in await result.data():
                 found_in_neo4j.add(record["id"])
     except Exception as exc:
         logger.error("Neo4j lookup failed during referential integrity check: %s", exc)
@@ -155,19 +155,17 @@ def spot_check(
     sample_size = min(n, len(original_records))
     sampled_records = random.sample(original_records, sample_size)
 
-    node_ids: set[str] = {node.id for node in nodes}
+    node_uid_set: set[str] = {n.id.rsplit(":", 1)[-1] for n in nodes}
+    uid_to_rel_types: dict[str, list[str]] = {}
+    for rel in relationships:
+        for endpoint_uid in (rel.from_id.rsplit(":", 1)[-1], rel.to_id.rsplit(":", 1)[-1]):
+            uid_to_rel_types.setdefault(endpoint_uid, []).append(rel.type)
 
     spot_records: list[SpotCheckRecord] = []
     for record in sampled_records:
         uid = record.get(id_field, "")
-        # A node matches this record if any of its ids end with the uid (namespace-agnostic)
-        node_found = any(nid.endswith(f":{uid}") for nid in node_ids)
-
-        rel_types = [
-            rel.type
-            for rel in relationships
-            if rel.from_id.endswith(f":{uid}") or rel.to_id.endswith(f":{uid}")
-        ]
+        node_found = uid in node_uid_set
+        rel_types = uid_to_rel_types.get(uid, [])
 
         spot_records.append(
             SpotCheckRecord(

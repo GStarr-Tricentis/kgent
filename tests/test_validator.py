@@ -47,64 +47,64 @@ def make_shared_ctx(node_type_names=None):
 # ---------------------------------------------------------------------------
 
 class TestReferentialIntegrityDryRun:
-    def test_all_endpoints_present_no_errors(self):
+    async def test_all_endpoints_present_no_errors(self):
         from graph_pipeline.validator import check_referential_integrity
         nodes = [make_node("ds1:tc-001"), make_node("ds1:req-001", label="Requirement")]
         rels = [make_rel("ds1:tc-001", "ds1:req-001")]
-        errors = check_referential_integrity(nodes, rels, driver=None)
+        errors = await check_referential_integrity(nodes, rels, driver=None)
         assert errors == []
 
-    def test_missing_from_id_is_warning_in_dry_run(self):
+    async def test_missing_from_id_is_warning_in_dry_run(self):
         from graph_pipeline.validator import check_referential_integrity
         nodes = [make_node("ds1:req-001", label="Requirement")]
         rels = [make_rel("ds1:tc-missing", "ds1:req-001")]
-        errors = check_referential_integrity(nodes, rels, driver=None)
+        errors = await check_referential_integrity(nodes, rels, driver=None)
         assert len(errors) == 1
         assert errors[0].severity == "warning"
         assert "ds1:tc-missing" in errors[0].message
 
-    def test_missing_to_id_is_warning_in_dry_run(self):
+    async def test_missing_to_id_is_warning_in_dry_run(self):
         from graph_pipeline.validator import check_referential_integrity
         nodes = [make_node("ds1:tc-001")]
         rels = [make_rel("ds1:tc-001", "ds1:req-missing")]
-        errors = check_referential_integrity(nodes, rels, driver=None)
+        errors = await check_referential_integrity(nodes, rels, driver=None)
         assert len(errors) == 1
         assert errors[0].severity == "warning"
         assert "ds1:req-missing" in errors[0].message
 
-    def test_both_endpoints_missing_two_warnings(self):
+    async def test_both_endpoints_missing_two_warnings(self):
         from graph_pipeline.validator import check_referential_integrity
         nodes = []
         rels = [make_rel("ds1:a-missing", "ds1:b-missing")]
-        errors = check_referential_integrity(nodes, rels, driver=None)
+        errors = await check_referential_integrity(nodes, rels, driver=None)
         assert len(errors) == 2
 
-    def test_no_relationships_no_errors(self):
+    async def test_no_relationships_no_errors(self):
         from graph_pipeline.validator import check_referential_integrity
         nodes = [make_node("ds1:tc-001")]
-        errors = check_referential_integrity(nodes, [], driver=None)
+        errors = await check_referential_integrity(nodes, [], driver=None)
         assert errors == []
 
-    def test_no_nodes_no_rels_no_errors(self):
+    async def test_no_nodes_no_rels_no_errors(self):
         from graph_pipeline.validator import check_referential_integrity
-        errors = check_referential_integrity([], [], driver=None)
+        errors = await check_referential_integrity([], [], driver=None)
         assert errors == []
 
-    def test_returns_list_of_validation_errors(self):
+    async def test_returns_list_of_validation_errors(self):
         from graph_pipeline.validator import ValidationError, check_referential_integrity
         nodes = [make_node("ds1:tc-001")]
         rels = [make_rel("ds1:tc-001", "ds1:missing")]
-        errors = check_referential_integrity(nodes, rels, driver=None)
+        errors = await check_referential_integrity(nodes, rels, driver=None)
         assert all(isinstance(e, ValidationError) for e in errors)
 
-    def test_error_has_record_id(self):
+    async def test_error_has_record_id(self):
         from graph_pipeline.validator import check_referential_integrity
         nodes = [make_node("ds1:tc-001")]
         rels = [make_rel("ds1:tc-001", "ds1:req-missing")]
-        errors = check_referential_integrity(nodes, rels, driver=None)
+        errors = await check_referential_integrity(nodes, rels, driver=None)
         assert errors[0].record_id is not None
 
-    def test_same_id_referenced_twice_one_warning(self):
+    async def test_same_id_referenced_twice_one_warning(self):
         """Two rels pointing to the same missing id should produce one warning per unique missing id."""
         from graph_pipeline.validator import check_referential_integrity
         nodes = [make_node("ds1:tc-001")]
@@ -112,9 +112,8 @@ class TestReferentialIntegrityDryRun:
             make_rel("ds1:tc-001", "ds1:missing"),
             make_rel("ds1:tc-001", "ds1:missing"),
         ]
-        errors = check_referential_integrity(nodes, rels, driver=None)
+        errors = await check_referential_integrity(nodes, rels, driver=None)
         missing_messages = [e.message for e in errors if "ds1:missing" in e.message]
-        # Only one warning per unique missing id
         assert len(missing_messages) == 1
 
 
@@ -126,49 +125,39 @@ class TestReferentialIntegrityDryRun:
 
 class TestReferentialIntegrityWithDriver:
     def _make_mock_driver(self, existing_ids: set):
-        """Minimal mock that implements session/run as Neo4j driver would."""
-        class MockResult:
-            def __init__(self, ids):
-                self._ids = ids
-            def single(self):
-                return None  # unused
-            def data(self):
-                return [{"id": i} for i in self._ids]
+        """Async mock driver that returns only IDs present in existing_ids."""
+        from unittest.mock import AsyncMock, MagicMock
 
-        class MockSession:
-            def __init__(self, ids):
-                self._ids = ids
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-            def run(self, query, **params):
-                # Return only those ids that exist in our set
-                queried = params.get("ids", [])
-                found = [i for i in queried if i in self._ids]
-                return MockResult(found)
+        async def _run(query, **params):
+            queried = params.get("ids", [])
+            found = [i for i in queried if i in existing_ids]
+            result = AsyncMock()
+            result.data.return_value = [{"id": i} for i in found]
+            return result
 
-        class MockDriver:
-            def __init__(self, ids):
-                self._ids = ids
-            def session(self):
-                return MockSession(self._ids)
+        session = AsyncMock()
+        session.__aenter__.return_value = session
+        session.__aexit__.return_value = False
+        session.run.side_effect = _run
 
-        return MockDriver(existing_ids)
+        driver = MagicMock()
+        driver.session.return_value = session
+        return driver
 
-    def test_missing_from_batch_but_found_in_neo4j_no_error(self):
+    async def test_missing_from_batch_but_found_in_neo4j_no_error(self):
         from graph_pipeline.validator import check_referential_integrity
-        # "ds1:req-001" not in batch but exists in Neo4j
         nodes = [make_node("ds1:tc-001")]
         rels = [make_rel("ds1:tc-001", "ds1:req-001")]
         driver = self._make_mock_driver({"ds1:req-001"})
-        errors = check_referential_integrity(nodes, rels, driver=driver)
+        errors = await check_referential_integrity(nodes, rels, driver=driver)
         assert errors == []
 
-    def test_missing_from_batch_and_neo4j_is_error(self):
+    async def test_missing_from_batch_and_neo4j_is_error(self):
         from graph_pipeline.validator import check_referential_integrity
         nodes = [make_node("ds1:tc-001")]
         rels = [make_rel("ds1:tc-001", "ds1:req-ghost")]
-        driver = self._make_mock_driver(set())  # nothing in Neo4j
-        errors = check_referential_integrity(nodes, rels, driver=driver)
+        driver = self._make_mock_driver(set())
+        errors = await check_referential_integrity(nodes, rels, driver=driver)
         assert len(errors) == 1
         assert errors[0].severity == "error"
 

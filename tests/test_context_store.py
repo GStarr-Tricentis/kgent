@@ -133,6 +133,22 @@ structural_patterns: []
         assert sc.node_types[0].name == "TestCase"
         assert sc.node_types[0].source_datasets == ["meap"]
 
+    def test_malformed_shared_context_raises_value_error(self, tmp_path, monkeypatch):
+        """A corrupted shared_context.yaml raises ValueError containing the file path."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        # node_types must be a list; a string value triggers validation failure in _shared_from_dict
+        bad_yaml = "version: 1\nnode_types: not_a_list\nrelationship_types: []\n"
+        (tmp_path / "shared_context.yaml").write_text(bad_yaml)
+
+        with pytest.raises(ValueError) as exc_info:
+            context_store.load_shared_context()
+
+        assert "shared_context.yaml" in str(exc_info.value)
+
 
 # ---------------------------------------------------------------------------
 # load_dataset_context / save_dataset_context
@@ -173,6 +189,85 @@ class TestDatasetContextIO:
         ctx = make_dataset_ctx(dataset_id="new_ds")
         context_store.save_dataset_context(ctx)
         assert (tmp_path / "datasets" / "new_ds.yaml").exists()
+
+    def test_malformed_dataset_context_raises_value_error(self, tmp_path, monkeypatch):
+        """A YAML file that fails DatasetContext validation raises ValueError, not a raw Pydantic error."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        # dataset_id is a required field; omitting it triggers validation failure
+        bad_yaml = "source_file: something.jsonl\nnode_types: []\n"
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "bad_ds.yaml").write_text(bad_yaml)
+
+        with pytest.raises(ValueError) as exc_info:
+            context_store.load_dataset_context("bad_ds")
+
+        assert "bad_ds.yaml" in str(exc_info.value)
+
+    def test_malformed_dataset_context_error_contains_hint(self, tmp_path, monkeypatch):
+        """The ValueError message tells the user how to recover."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        bad_yaml = "source_file: something.jsonl\nnode_types: []\n"
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "bad_ds2.yaml").write_text(bad_yaml)
+
+        with pytest.raises(ValueError) as exc_info:
+            context_store.load_dataset_context("bad_ds2")
+
+        msg = str(exc_info.value)
+        assert "Fix the YAML file" in msg or "delete it" in msg
+
+    def test_malformed_dataset_context_preserves_cause(self, tmp_path, monkeypatch):
+        """The original exception is attached as __cause__ so full tracebacks still show it."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        bad_yaml = "source_file: something.jsonl\nnode_types: []\n"
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "bad_ds3.yaml").write_text(bad_yaml)
+
+        with pytest.raises(ValueError) as exc_info:
+            context_store.load_dataset_context("bad_ds3")
+
+        assert exc_info.value.__cause__ is not None
+
+    def test_source_fingerprint_persists_through_save_load(self, tmp_path, monkeypatch):
+        """source_fingerprint written to YAML is read back with the correct value."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        ctx = context_store.DatasetContext(
+            dataset_id="fp_test",
+            source_fingerprint="abc123def45678",
+        )
+        context_store.save_dataset_context(ctx)
+        reloaded = context_store.load_dataset_context("fp_test")
+        assert reloaded.source_fingerprint == "abc123def45678"
+
+    def test_source_fingerprint_defaults_to_empty_on_old_yaml(self, tmp_path, monkeypatch):
+        """Context files without source_fingerprint load with empty string default."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "old_ds.yaml").write_text(
+            "dataset_id: old_ds\nsource_file: ''\n"
+        )
+        loaded = context_store.load_dataset_context("old_ds")
+        assert loaded.source_fingerprint == ""
 
 
 # ---------------------------------------------------------------------------
@@ -382,3 +477,201 @@ class TestMergeConflict:
         sc = cs.load_shared_context()
         assert sc.version == 1
         assert sc.node_types[0].maps_to == "ReusableStep"
+
+
+# ---------------------------------------------------------------------------
+# merge_into_shared — file locking
+# ---------------------------------------------------------------------------
+
+class TestMergeSharedLocking:
+    """Verify that merge_into_shared holds and releases an exclusive file lock."""
+
+    def test_lock_file_created_after_merge(self, tmp_path, monkeypatch):
+        """A .lock file sibling of shared_context.yaml is created during merge."""
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        ctx = context_store.DatasetContext(dataset_id="ds1")
+        context_store.merge_into_shared(ctx)
+
+        assert (tmp_path / "shared_context.lock").exists()
+
+    def test_lock_released_after_merge(self, tmp_path, monkeypatch):
+        """The exclusive lock is released when merge_into_shared returns normally."""
+        import fcntl
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+
+        ctx = context_store.DatasetContext(dataset_id="ds1")
+        context_store.merge_into_shared(ctx)
+
+        # LOCK_EX | LOCK_NB raises BlockingIOError if the lock is still held;
+        # if it succeeds the lock was cleanly released.
+        lock_path = tmp_path / "shared_context.lock"
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+    def test_concurrent_merges_do_not_lose_data(self, tmp_path, monkeypatch):
+        """Five threads merging distinct datasets all survive; no type is silently dropped."""
+        import importlib
+        import threading
+        from graph_pipeline import context_store
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        importlib.reload(context_store)
+
+        errors: list[Exception] = []
+
+        def run_merge(ds_id: str, type_name: str) -> None:
+            try:
+                ctx = context_store.DatasetContext(
+                    dataset_id=ds_id,
+                    node_types=[
+                        context_store.DatasetNodeType(name=type_name, maps_to=type_name)
+                    ],
+                )
+                context_store.merge_into_shared(ctx)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=run_merge, args=(f"ds{i}", f"Type{i}"))
+            for i in range(5)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Merge raised: {errors}"
+        shared = context_store.load_shared_context()
+        present = {nt.name for nt in shared.node_types}
+        for i in range(5):
+            assert f"Type{i}" in present, f"Type{i} was lost in concurrent merge"
+
+
+# ---------------------------------------------------------------------------
+# Schema versioning
+# ---------------------------------------------------------------------------
+
+class TestSchemaVersioning:
+    def _reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+        return context_store
+
+    def test_save_stamps_current_dataset_schema_version(self, tmp_path, monkeypatch):
+        """save_dataset_context always writes schema_version == DATASET_CONTEXT_SCHEMA_VERSION."""
+        cs = self._reload(tmp_path, monkeypatch)
+        ctx = cs.DatasetContext(dataset_id="ds1", schema_version=0)
+        cs.save_dataset_context(ctx)
+        loaded = cs.load_dataset_context("ds1")
+        assert loaded.schema_version == cs.DATASET_CONTEXT_SCHEMA_VERSION
+
+    def test_old_dataset_file_without_schema_version_loads_ok(self, tmp_path, monkeypatch):
+        """A YAML without schema_version defaults to 0 and loads without error."""
+        cs = self._reload(tmp_path, monkeypatch)
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "old_ds.yaml").write_text(
+            "dataset_id: old_ds\nsource_file: ''\n"
+        )
+        ctx = cs.load_dataset_context("old_ds")
+        assert ctx is not None
+        assert ctx.schema_version == 0
+
+    def test_future_dataset_schema_version_raises_value_error(self, tmp_path, monkeypatch):
+        """A dataset context with schema_version > current raises ValueError."""
+        cs = self._reload(tmp_path, monkeypatch)
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "future_ds.yaml").write_text(
+            "dataset_id: future_ds\nschema_version: 999\n"
+        )
+        with pytest.raises(ValueError, match="schema_version"):
+            cs.load_dataset_context("future_ds")
+
+    def test_future_dataset_schema_version_error_mentions_versions(self, tmp_path, monkeypatch):
+        """The ValueError message includes both file version and current version."""
+        cs = self._reload(tmp_path, monkeypatch)
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "fv_ds.yaml").write_text(
+            "dataset_id: fv_ds\nschema_version: 999\n"
+        )
+        with pytest.raises(ValueError) as exc_info:
+            cs.load_dataset_context("fv_ds")
+        msg = str(exc_info.value)
+        assert "999" in msg
+        assert str(cs.DATASET_CONTEXT_SCHEMA_VERSION) in msg
+
+    def test_shared_context_merge_stamps_schema_version(self, tmp_path, monkeypatch):
+        """After merge_into_shared, load_shared_context returns schema_version == current."""
+        cs = self._reload(tmp_path, monkeypatch)
+        ctx = cs.DatasetContext(
+            dataset_id="ds1",
+            node_types=[cs.DatasetNodeType(name="TC", maps_to="TC")],
+        )
+        cs.merge_into_shared(ctx)
+        sc = cs.load_shared_context()
+        assert sc.schema_version == cs.SHARED_CONTEXT_SCHEMA_VERSION
+
+    def test_old_shared_file_without_schema_version_loads_ok(self, tmp_path, monkeypatch):
+        """A shared_context.yaml without schema_version defaults to 0 and loads without error."""
+        cs = self._reload(tmp_path, monkeypatch)
+        (tmp_path / "shared_context.yaml").write_text(
+            "version: 2\nupdated_at: '2026-01-01'\nnode_types: []\n"
+            "relationship_types: []\nstructural_patterns: []\n"
+        )
+        sc = cs.load_shared_context()
+        assert sc.schema_version == 0
+
+    def test_future_shared_schema_version_raises_value_error(self, tmp_path, monkeypatch):
+        """A shared context with schema_version > current raises ValueError."""
+        cs = self._reload(tmp_path, monkeypatch)
+        (tmp_path / "shared_context.yaml").write_text(
+            "version: 1\nschema_version: 999\n"
+            "node_types: []\nrelationship_types: []\nstructural_patterns: []\n"
+        )
+        with pytest.raises(ValueError, match="schema_version"):
+            cs.load_shared_context()
+
+
+# ---------------------------------------------------------------------------
+# Record hash store
+# ---------------------------------------------------------------------------
+
+class TestRecordHashStore:
+    def _reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+        return context_store
+
+    def test_load_missing_returns_empty_dict(self, tmp_path, monkeypatch):
+        cs = self._reload(tmp_path, monkeypatch)
+        result = cs.load_record_hashes("nonexistent_ds")
+        assert result == {}
+
+    def test_save_then_load_round_trip(self, tmp_path, monkeypatch):
+        cs = self._reload(tmp_path, monkeypatch)
+        hashes = {"tc-001": "abc123def456abcd", "tc-002": "1234567890abcdef"}
+        cs.save_record_hashes("ds1", hashes)
+        loaded = cs.load_record_hashes("ds1")
+        assert loaded == hashes
+
+    def test_save_creates_parent_directory(self, tmp_path, monkeypatch):
+        cs = self._reload(tmp_path, monkeypatch)
+        cs.save_record_hashes("new_ds", {"tc-001": "abc123def456abcd"})
+        assert (tmp_path / "datasets" / "new_ds_hashes.json").exists()
+
+    def test_corrupted_file_returns_empty_dict(self, tmp_path, monkeypatch):
+        cs = self._reload(tmp_path, monkeypatch)
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "datasets" / "bad_ds_hashes.json").write_text("not valid json {{{{")
+        result = cs.load_record_hashes("bad_ds")
+        assert result == {}

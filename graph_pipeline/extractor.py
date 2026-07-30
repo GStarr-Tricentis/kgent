@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -10,7 +11,7 @@ from graph_pipeline.models import ExtractionSource, Node, Relationship
 
 logger = logging.getLogger(__name__)
 
-_ENTITY_EXTRACTION_PROMPT = Path(__file__).parent / "prompts" / "entity_extraction.txt"
+_ENTITY_EXTRACTION_BATCH_PROMPT = Path(__file__).parent / "prompts" / "entity_extraction_batch.txt"
 
 
 # ---------------------------------------------------------------------------
@@ -134,71 +135,115 @@ def _build_hierarchy_structures(
 # Rule 7: LLM-assisted extraction for ambiguous fields
 # ---------------------------------------------------------------------------
 
+async def _llm_extract_batch(
+    batch: list[dict],
+    dataset_ctx: DatasetContext,
+    type_map: dict[str, str],
+    backend: ModelBackend,
+) -> tuple[list[Node], list[Relationship]]:
+    """Send one batch of records to the LLM; parse the array response."""
+    template = _ENTITY_EXTRACTION_BATCH_PROMPT.read_text(encoding="utf-8")
+    dataset_id = dataset_ctx.dataset_id
+    id_field = dataset_ctx.id_field
+    ambiguous = dataset_ctx.ambiguous_fields
+
+    payload = [
+        {
+            "label": type_map.get(r.get(dataset_ctx.type_field, ""), r.get(dataset_ctx.type_field, "")),
+            "record": r,
+        }
+        for r in batch
+    ]
+    prompt = template.format(
+        dataset_id=dataset_id,
+        id_field=id_field,
+        ambiguous_fields=", ".join(ambiguous),
+        records_json=json.dumps(payload, indent=2, ensure_ascii=False),
+    )
+
+    nodes: list[Node] = []
+    rels: list[Relationship] = []
+    try:
+        response = await backend.complete(messages=[{"role": "user", "content": prompt}], tools=[])
+        raw = response.content or ""
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        data = json.loads(text)
+    except Exception as exc:
+        logger.warning("LLM batch extraction failed: %s", exc)
+        return nodes, rels
+
+    if not isinstance(data, list):
+        logger.warning("LLM batch extraction returned non-list: %r", type(data).__name__)
+        return nodes, rels
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        record_id = item.get("source_record_id", "")
+        for n in item.get("nodes", []):
+            try:
+                nodes.append(
+                    Node(
+                        id=n["id"],
+                        label=n["label"],
+                        properties=n.get("properties", {}),
+                        source_record_id=n.get("source_record_id", record_id),
+                        extraction_source=ExtractionSource.LLM_INFERRED,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping malformed node in batch result: %s", exc)
+        for r_item in item.get("relationships", []):
+            try:
+                rels.append(
+                    Relationship(
+                        from_id=r_item["from_id"],
+                        to_id=r_item["to_id"],
+                        from_label=r_item["from_label"],
+                        to_label=r_item["to_label"],
+                        type=r_item["type"],
+                        properties=r_item.get("properties", {}),
+                        source_record_id=r_item.get("source_record_id", record_id),
+                        extraction_source=ExtractionSource.LLM_INFERRED,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping malformed relationship in batch result: %s", exc)
+
+    return nodes, rels
+
+
 async def _llm_extract_ambiguous(
     records: list[dict],
     dataset_ctx: DatasetContext,
     type_map: dict[str, str],
     backend: ModelBackend,
+    batch_size: int = 10,
 ) -> tuple[list[Node], list[Relationship]]:
-    """Call the LLM once per ambiguous record; mark results LLM_INFERRED."""
-    template = _ENTITY_EXTRACTION_PROMPT.read_text(encoding="utf-8")
-    dataset_id = dataset_ctx.dataset_id
+    """Send ambiguous records to the LLM in batches; run all batches concurrently."""
     ambiguous = dataset_ctx.ambiguous_fields
-    id_field = dataset_ctx.id_field
+    eligible = [r for r in records if any(f in r for f in ambiguous)]
+    if not eligible:
+        return [], []
+
+    batches = [eligible[i : i + batch_size] for i in range(0, len(eligible), batch_size)]
+    results = await asyncio.gather(
+        *[_llm_extract_batch(b, dataset_ctx, type_map, backend) for b in batches],
+        return_exceptions=True,
+    )
 
     llm_nodes: list[Node] = []
     llm_rels: list[Relationship] = []
-
-    for record in records:
-        if not any(f in record for f in ambiguous):
+    for result in results:
+        if isinstance(result, BaseException):
+            logger.warning("LLM batch raised: %s", result)
             continue
-
-        type_name = record.get(dataset_ctx.type_field, "")
-        label = type_map.get(type_name, type_name)
-        prompt = template.format(
-            dataset_id=dataset_id,
-            label=label,
-            id_field=id_field,
-            record_json=json.dumps(record, indent=2, ensure_ascii=False),
-            ambiguous_fields=", ".join(ambiguous),
-        )
-
-        raw = ""
-        try:
-            response = await backend.complete(messages=[{"role": "user", "content": prompt}], tools=[])
-            raw = response.content or ""
-            text = raw.strip()
-            if text.startswith("```"):
-                lines = text.splitlines()
-                text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-            data = json.loads(text)
-        except Exception as exc:
-            logger.warning("LLM extraction failed for record %s: %s", record.get(id_field), exc)
-            continue
-
-        for n in data.get("nodes", []):
-            llm_nodes.append(
-                Node(
-                    id=n["id"],
-                    label=n["label"],
-                    properties=n.get("properties", {}),
-                    source_record_id=n.get("source_record_id", record.get(id_field, "")),
-                    extraction_source=ExtractionSource.LLM_INFERRED,
-                )
-            )
-        for r in data.get("relationships", []):
-            llm_rels.append(
-                Relationship(
-                    from_id=r["from_id"],
-                    to_id=r["to_id"],
-                    from_label=r["from_label"],
-                    to_label=r["to_label"],
-                    type=r["type"],
-                    properties=r.get("properties", {}),
-                    source_record_id=r.get("source_record_id", record.get(id_field, "")),
-                    extraction_source=ExtractionSource.LLM_INFERRED,
-                )
-            )
+        nodes, rels = result
+        llm_nodes.extend(nodes)
+        llm_rels.extend(rels)
 
     return llm_nodes, llm_rels
 

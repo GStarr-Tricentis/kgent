@@ -702,13 +702,16 @@ class TestRule7LlmExtraction:
         from graph_pipeline.extractor import extract_all
         from graph_pipeline.models import ExtractionSource
 
-        llm_response = json.dumps({
-            "nodes": [
-                {"id": "ds1:cat-functional", "label": "Category",
-                 "properties": {"name": "functional"}, "source_record_id": "tc-001"}
-            ],
-            "relationships": [],
-        })
+        llm_response = json.dumps([
+            {
+                "source_record_id": "tc-001",
+                "nodes": [
+                    {"id": "ds1:cat-functional", "label": "Category",
+                     "properties": {"name": "functional"}, "source_record_id": "tc-001"}
+                ],
+                "relationships": [],
+            }
+        ])
         ctx = make_dataset_ctx(
             node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
             ambiguous_fields=["category"],
@@ -964,3 +967,234 @@ class TestExtractionSourceLabels:
         nodes, _ = await extract_all(records, ctx, make_shared_ctx())
         tc_node = next(n for n in nodes if n.id == "ds1:tc-001")
         assert tc_node.extraction_source == ExtractionSource.RULE_BASED
+
+
+# ---------------------------------------------------------------------------
+# _llm_extract_batch — unit tests for the single-batch helper
+# ---------------------------------------------------------------------------
+
+class TestLlmExtractBatch:
+    """Tests for _llm_extract_batch — the function that handles one batch of records."""
+
+    def _ctx(self, ambiguous_fields=None):
+        return make_dataset_ctx(
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+            ambiguous_fields=ambiguous_fields or ["category"],
+            hierarchy_config=None,
+            association_config=None,
+        )
+
+    def _type_map(self):
+        return {"TestCase": "TestCase"}
+
+    def _batch_response(self, source_id, nodes, rels=None):
+        """Build a valid batch-format JSON string for MockBackend."""
+        import json as _json
+        return _json.dumps([
+            {"source_record_id": source_id, "nodes": nodes, "relationships": rels or []}
+        ])
+
+    async def test_returns_nodes_from_batch_response(self):
+        from graph_pipeline.extractor import _llm_extract_batch
+        from graph_pipeline.models import ExtractionSource
+
+        record = {"uniqueId": "tc-001", "typeName": "TestCase", "category": "functional"}
+        response = self._batch_response(
+            "tc-001",
+            [{"id": "ds1:cat-functional", "label": "Category",
+              "properties": {}, "source_record_id": "tc-001"}],
+        )
+        nodes, _ = await _llm_extract_batch(
+            [record], self._ctx(), self._type_map(), MockBackend(response)
+        )
+        assert len(nodes) == 1
+        assert nodes[0].id == "ds1:cat-functional"
+        assert nodes[0].extraction_source == ExtractionSource.LLM_INFERRED
+
+    async def test_returns_relationships_from_batch_response(self):
+        from graph_pipeline.extractor import _llm_extract_batch
+        from graph_pipeline.models import ExtractionSource
+
+        record = {"uniqueId": "tc-001", "typeName": "TestCase", "category": "functional"}
+        response = self._batch_response(
+            "tc-001",
+            [],
+            [{"from_id": "ds1:tc-001", "to_id": "ds1:cat-fn", "from_label": "TestCase",
+              "to_label": "Category", "type": "HAS_CATEGORY",
+              "properties": {}, "source_record_id": "tc-001"}],
+        )
+        _, rels = await _llm_extract_batch(
+            [record], self._ctx(), self._type_map(), MockBackend(response)
+        )
+        assert len(rels) == 1
+        assert rels[0].type == "HAS_CATEGORY"
+        assert rels[0].extraction_source == ExtractionSource.LLM_INFERRED
+
+    async def test_llm_failure_returns_empty(self):
+        """A backend that raises is caught; empty lists are returned."""
+        from graph_pipeline.extractor import _llm_extract_batch
+
+        class FailingBackend:
+            async def complete(self, messages, tools, response_format=None):
+                raise RuntimeError("simulated LLM error")
+
+        record = {"uniqueId": "tc-001", "typeName": "TestCase", "category": "x"}
+        nodes, rels = await _llm_extract_batch(
+            [record], self._ctx(), self._type_map(), FailingBackend()
+        )
+        assert nodes == []
+        assert rels == []
+
+    async def test_non_list_response_returns_empty(self):
+        """A backend returning a JSON object (not array) is handled gracefully."""
+        import json as _json
+        from graph_pipeline.extractor import _llm_extract_batch
+
+        bad_response = _json.dumps({"nodes": [], "relationships": []})
+        record = {"uniqueId": "tc-001", "typeName": "TestCase", "category": "x"}
+        nodes, rels = await _llm_extract_batch(
+            [record], self._ctx(), self._type_map(), MockBackend(bad_response)
+        )
+        assert nodes == []
+        assert rels == []
+
+    async def test_malformed_node_skipped_others_returned(self):
+        """An item missing a required node field is skipped; valid items are still returned."""
+        import json as _json
+        from graph_pipeline.extractor import _llm_extract_batch
+
+        response = _json.dumps([
+            {
+                "source_record_id": "tc-001",
+                "nodes": [
+                    # missing required "id" field — will raise when constructing Node
+                    {"label": "BadNode", "properties": {}, "source_record_id": "tc-001"},
+                    # valid node
+                    {"id": "ds1:cat-ok", "label": "Category",
+                     "properties": {}, "source_record_id": "tc-001"},
+                ],
+                "relationships": [],
+            }
+        ])
+        record = {"uniqueId": "tc-001", "typeName": "TestCase", "category": "x"}
+        nodes, _ = await _llm_extract_batch(
+            [record], self._ctx(), self._type_map(), MockBackend(response)
+        )
+        assert len(nodes) == 1
+        assert nodes[0].id == "ds1:cat-ok"
+
+
+# ---------------------------------------------------------------------------
+# _llm_extract_ambiguous — unit tests for the batching orchestrator
+# ---------------------------------------------------------------------------
+
+class TestLlmExtractAmbiguous:
+    """Tests for _llm_extract_ambiguous — the orchestrator that batches and gathers."""
+
+    def _ctx(self, ambiguous_fields=None):
+        return make_dataset_ctx(
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+            ambiguous_fields=ambiguous_fields or ["category"],
+            hierarchy_config=None,
+            association_config=None,
+        )
+
+    def _type_map(self):
+        return {"TestCase": "TestCase"}
+
+    async def test_batching_reduces_llm_calls(self):
+        """12 eligible records with batch_size=5 → 3 LLM calls, not 12."""
+        import json as _json
+        from graph_pipeline.extractor import _llm_extract_ambiguous
+
+        class CountingBackend:
+            def __init__(self):
+                self.call_count = 0
+
+            async def complete(self, messages, tools, response_format=None):
+                from kgent.agent.types import ModelResponse
+                self.call_count += 1
+                content = _json.dumps([])
+                return ModelResponse(
+                    content=content, tool_calls=[], finish_reason="stop",
+                    assistant_message={"role": "assistant", "content": content}, raw=None,
+                )
+
+        records = [
+            {"uniqueId": f"tc-{i:03d}", "typeName": "TestCase", "category": "x"}
+            for i in range(12)
+        ]
+        backend = CountingBackend()
+        await _llm_extract_ambiguous(
+            records, self._ctx(), self._type_map(), backend, batch_size=5
+        )
+        assert backend.call_count == 3  # ceil(12 / 5) = 3
+
+    async def test_records_without_ambiguous_field_excluded(self):
+        """Records not containing any ambiguous field are excluded before batching."""
+        import json as _json
+        from graph_pipeline.extractor import _llm_extract_ambiguous
+
+        class CountingBackend:
+            def __init__(self):
+                self.call_count = 0
+
+            async def complete(self, messages, tools, response_format=None):
+                from kgent.agent.types import ModelResponse
+                self.call_count += 1
+                content = _json.dumps([])
+                return ModelResponse(
+                    content=content, tool_calls=[], finish_reason="stop",
+                    assistant_message={"role": "assistant", "content": content}, raw=None,
+                )
+
+        records = [
+            # 3 records WITH the ambiguous field
+            {"uniqueId": "tc-001", "typeName": "TestCase", "category": "x"},
+            {"uniqueId": "tc-002", "typeName": "TestCase", "category": "y"},
+            {"uniqueId": "tc-003", "typeName": "TestCase", "category": "z"},
+            # 2 records WITHOUT (no LLM call expected for these)
+            {"uniqueId": "tc-004", "typeName": "TestCase", "name": "no category"},
+            {"uniqueId": "tc-005", "typeName": "TestCase"},
+        ]
+        backend = CountingBackend()
+        await _llm_extract_ambiguous(
+            records, self._ctx(), self._type_map(), backend, batch_size=10
+        )
+        # All 3 eligible records fit in one batch → exactly 1 LLM call
+        assert backend.call_count == 1
+
+    async def test_failed_batch_does_not_prevent_other_batches(self):
+        """When one batch raises, the other batches' results are still returned."""
+        import json as _json
+        from graph_pipeline.extractor import _llm_extract_ambiguous
+
+        call_count = {"n": 0}
+
+        class PartiallyFailingBackend:
+            async def complete(self, messages, tools, response_format=None):
+                from kgent.agent.types import ModelResponse
+                call_count["n"] += 1
+                if call_count["n"] == 1:
+                    raise RuntimeError("first batch failed")
+                # Second batch returns one node
+                content = _json.dumps([
+                    {"source_record_id": "tc-011",
+                     "nodes": [{"id": "ds1:cat-ok", "label": "Category",
+                                "properties": {}, "source_record_id": "tc-011"}],
+                     "relationships": []}
+                ])
+                return ModelResponse(
+                    content=content, tool_calls=[], finish_reason="stop",
+                    assistant_message={"role": "assistant", "content": content}, raw=None,
+                )
+
+        records = [
+            {"uniqueId": f"tc-{i:03d}", "typeName": "TestCase", "category": "x"}
+            for i in range(20)
+        ]
+        nodes, _ = await _llm_extract_ambiguous(
+            records, self._ctx(), self._type_map(), PartiallyFailingBackend(), batch_size=10
+        )
+        # Second batch succeeded and produced one node
+        assert any(n.id == "ds1:cat-ok" for n in nodes)

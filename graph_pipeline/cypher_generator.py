@@ -57,3 +57,15 @@ def generate_constraint_statements(labels: list[str]) -> list[str]:
         f"CREATE CONSTRAINT IF NOT EXISTS FOR (n:{label}) REQUIRE n.id IS UNIQUE"
         for label in labels
     ]
+
+
+def generate_extraction_source_index_statements(labels: list[str]) -> list[str]:
+    """Return one CREATE INDEX statement per label for the extraction_source property.
+
+    Allows efficient filtering by extraction source without scanning all nodes of a label.
+    Indexes are created with IF NOT EXISTS so re-running ingest is safe.
+    """
+    return [
+        f"CREATE INDEX IF NOT EXISTS FOR (n:{label}) ON (n.extraction_source)"
+        for label in labels
+    ]
