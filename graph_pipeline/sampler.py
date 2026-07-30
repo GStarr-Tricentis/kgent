@@ -156,6 +156,25 @@ def summarize_structure(
     return "\n".join(lines)
 
 
+def compute_record_hashes(records: list[dict], id_field: str) -> dict[str, str]:
+    """Return {record_id: digest} for every record that has id_field.
+
+    Digest is a 16-char hex SHA-256 of the record's JSON with sorted keys.
+    Records without id_field are silently skipped — consistent with extractor behaviour.
+    record_id is always coerced to str to match YAML round-trip semantics.
+    """
+    hashes: dict[str, str] = {}
+    for record in records:
+        record_id = record.get(id_field)
+        if record_id is None:
+            continue
+        digest = hashlib.sha256(
+            json.dumps(record, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()[:16]
+        hashes[str(record_id)] = digest
+    return hashes
+
+
 def compute_fingerprint(records: list[dict], type_field: str | None = None) -> str:
     """Return a 16-hex-char fingerprint of the type distribution of records.
 

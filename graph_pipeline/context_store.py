@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import fcntl
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,9 @@ from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
+
+DATASET_CONTEXT_SCHEMA_VERSION = 1
+SHARED_CONTEXT_SCHEMA_VERSION = 1
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +48,7 @@ class StructuralPattern(BaseModel):
 class SharedContext(BaseModel):
     version: int = 0
     updated_at: str = ""
+    schema_version: int = 0
     node_types: list[SharedNodeType] = Field(default_factory=list)
     relationship_types: list[SharedRelationshipType] = Field(default_factory=list)
     structural_patterns: list[StructuralPattern] = Field(default_factory=list)
@@ -116,6 +121,7 @@ class DatasetContext(BaseModel):
     design_decisions: list[DesignDecision] = Field(default_factory=list)
     ambiguous_fields: list[str] = Field(default_factory=list)
     source_fingerprint: str = ""
+    schema_version: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +174,10 @@ def _dataset_path(dataset_id: str) -> Path:
     return _context_dir() / "datasets" / f"{dataset_id}.yaml"
 
 
+def _hash_store_path(dataset_id: str) -> Path:
+    return _context_dir() / "datasets" / f"{dataset_id}_hashes.json"
+
+
 # ---------------------------------------------------------------------------
 # YAML helpers
 # ---------------------------------------------------------------------------
@@ -188,6 +198,7 @@ def _shared_to_dict(sc: SharedContext) -> dict:
     return {
         "version": sc.version,
         "updated_at": sc.updated_at,
+        "schema_version": SHARED_CONTEXT_SCHEMA_VERSION,
         "node_types": [
             {
                 "name": nt.name,
@@ -232,6 +243,7 @@ def _shared_from_dict(data: dict) -> SharedContext:
     return SharedContext(
         version=data.get("version", 0),
         updated_at=data.get("updated_at", ""),
+        schema_version=data.get("schema_version", 0),
         node_types=node_types,
         relationship_types=rel_types,
         structural_patterns=patterns,
@@ -247,11 +259,18 @@ def load_shared_context() -> SharedContext:
     if not path.exists():
         return SharedContext()
     try:
-        return _shared_from_dict(_load_yaml(path))
+        sc = _shared_from_dict(_load_yaml(path))
     except Exception as exc:
         raise ValueError(
             f"Could not load shared context from {path}: {exc}"
         ) from exc
+    if sc.schema_version > SHARED_CONTEXT_SCHEMA_VERSION:
+        raise ValueError(
+            f"Shared context at {path} was written by a newer version of kgent "
+            f"(schema_version={sc.schema_version}, current={SHARED_CONTEXT_SCHEMA_VERSION}). "
+            "Upgrade kgent or delete the file to regenerate."
+        )
+    return sc
 
 
 def load_dataset_context(dataset_id: str) -> DatasetContext | None:
@@ -260,17 +279,46 @@ def load_dataset_context(dataset_id: str) -> DatasetContext | None:
         return None
     data = _load_yaml(path)
     try:
-        return DatasetContext(**data)
+        ctx = DatasetContext(**data)
     except Exception as exc:
         raise ValueError(
             f"Could not load dataset context from {path}: {exc}\n"
             "Fix the YAML file and try again, or delete it to regenerate from scratch."
         ) from exc
+    if ctx.schema_version > DATASET_CONTEXT_SCHEMA_VERSION:
+        raise ValueError(
+            f"Dataset context at {path} was written by a newer version of kgent "
+            f"(schema_version={ctx.schema_version}, current={DATASET_CONTEXT_SCHEMA_VERSION}). "
+            "Upgrade kgent or delete the file to regenerate."
+        )
+    return ctx
 
 
 def save_dataset_context(ctx: DatasetContext) -> None:
     path = _dataset_path(ctx.dataset_id)
-    _save_yaml(path, ctx.model_dump())
+    data = ctx.model_dump()
+    data["schema_version"] = DATASET_CONTEXT_SCHEMA_VERSION
+    _save_yaml(path, data)
+
+
+def load_record_hashes(dataset_id: str) -> dict[str, str]:
+    """Load the per-record hash store for a dataset. Returns {} if no store exists or it is corrupt."""
+    path = _hash_store_path(dataset_id)
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_record_hashes(dataset_id: str, hashes: dict[str, str]) -> None:
+    """Persist per-record hashes to disk, overwriting the previous store."""
+    path = _hash_store_path(dataset_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(hashes, f, sort_keys=True)
 
 
 def merge_into_shared(dataset_ctx: DatasetContext) -> SharedContext:

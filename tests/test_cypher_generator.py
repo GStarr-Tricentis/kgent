@@ -250,3 +250,44 @@ class TestGenerateConstraintStatements:
         from graph_pipeline.cypher_generator import generate_constraint_statements
         for stmt in generate_constraint_statements(["TestCase"]):
             assert ".id" in stmt or "n.id" in stmt
+
+
+# ---------------------------------------------------------------------------
+# generate_extraction_source_index_statements
+# ---------------------------------------------------------------------------
+
+class TestGenerateExtractionSourceIndexStatements:
+    def test_returns_list(self):
+        from graph_pipeline.cypher_generator import generate_extraction_source_index_statements
+        result = generate_extraction_source_index_statements(["TestCase"])
+        assert isinstance(result, list)
+
+    def test_one_statement_per_label(self):
+        from graph_pipeline.cypher_generator import generate_extraction_source_index_statements
+        result = generate_extraction_source_index_statements(["TestCase", "Requirement", "Defect"])
+        assert len(result) == 3
+
+    def test_empty_labels_returns_empty(self):
+        from graph_pipeline.cypher_generator import generate_extraction_source_index_statements
+        assert generate_extraction_source_index_statements([]) == []
+
+    def test_uses_create_index_not_constraint(self):
+        from graph_pipeline.cypher_generator import generate_extraction_source_index_statements
+        for stmt in generate_extraction_source_index_statements(["TestCase"]):
+            assert "CREATE INDEX" in stmt
+            assert "CONSTRAINT" not in stmt
+
+    def test_uses_if_not_exists(self):
+        from graph_pipeline.cypher_generator import generate_extraction_source_index_statements
+        for stmt in generate_extraction_source_index_statements(["TestCase"]):
+            assert "IF NOT EXISTS" in stmt
+
+    def test_extraction_source_property_in_statement(self):
+        from graph_pipeline.cypher_generator import generate_extraction_source_index_statements
+        for stmt in generate_extraction_source_index_statements(["TestCase"]):
+            assert "extraction_source" in stmt
+
+    def test_label_appears_in_statement(self):
+        from graph_pipeline.cypher_generator import generate_extraction_source_index_statements
+        stmts = generate_extraction_source_index_statements(["Requirement"])
+        assert any("Requirement" in s for s in stmts)

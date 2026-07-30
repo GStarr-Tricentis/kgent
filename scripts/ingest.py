@@ -45,6 +45,31 @@ def _diff_canonical_names(existing, proposed) -> list[str]:
     return lines
 
 
+def _schema_preview(ctx: "DatasetContext") -> str:
+    """Return a human-readable string summarising a proposed DatasetContext.
+
+    Used to print schema proposals when --dry-run suppresses saving to disk.
+    """
+    lines = ["      Schema proposal (not saved — dry-run):"]
+    lines.append(f"        id_field: {ctx.id_field}  |  type_field: {ctx.type_field}")
+    if ctx.node_types:
+        lines.append(f"        node_types ({len(ctx.node_types)}):")
+        for nt in ctx.node_types:
+            lines.append(f"          {nt.name} → {nt.maps_to}")
+    if ctx.relationship_types:
+        lines.append(f"        relationship_types ({len(ctx.relationship_types)}):")
+        for rt in ctx.relationship_types:
+            lines.append(f"          {rt.name} ({rt.from_type} → {rt.to_type})")
+    if ctx.implicit_relationships:
+        impl_names = ", ".join(ir.maps_to for ir in ctx.implicit_relationships)
+        lines.append(
+            f"        implicit_relationships ({len(ctx.implicit_relationships)}): {impl_names}"
+        )
+    if ctx.ambiguous_fields:
+        lines.append(f"        ambiguous_fields: {', '.join(ctx.ambiguous_fields)}")
+    return "\n".join(lines)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest a dataset into the Neo4j knowledge graph")
     parser.add_argument("--file", required=True, help="Path to the data file to ingest")
@@ -56,6 +81,9 @@ async def main() -> None:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--force-rediscover", action="store_true",
                         help="Re-run schema discovery even if the dataset fingerprint is unchanged")
+    parser.add_argument("--full-ingest", action="store_true",
+                        help="Process all records regardless of per-record hash cache; "
+                             "also ensures the shared context merge runs even when record hashes are unchanged")
     parser.add_argument("--config", default="kgent/config/config.yaml")
     parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
                         help="Model provider (default: local)")
@@ -141,9 +169,13 @@ async def main() -> None:
             _indent(f"  ⚠ {w}")
 
         proposed_ctx.source_fingerprint = fingerprint
-        from graph_pipeline.context_store import save_dataset_context
-        save_dataset_context(proposed_ctx)
-        _indent(f"dataset_context saved to {ctx_path}")
+        if args.dry_run:
+            print(_schema_preview(proposed_ctx))
+            _indent("(dry-run: context not saved to disk)")
+        else:
+            from graph_pipeline.context_store import save_dataset_context
+            save_dataset_context(proposed_ctx)
+            _indent(f"dataset_context saved to {ctx_path}")
 
     # -------------------------------------------------------------------------
     # Step 4: Human review (or skip if unchanged)
@@ -153,7 +185,10 @@ async def main() -> None:
 
     # Determine whether to require review
     require_review = True
-    if args.skip_review:
+    if args.dry_run:
+        require_review = False
+        _indent("(dry-run: skipping human review)")
+    elif args.skip_review:
         if not prior_version_exists:
             _indent("No prior context found — review required on first ingestion.")
         else:
@@ -175,18 +210,52 @@ async def main() -> None:
             print("\nAborted.")
             sys.exit(0)
 
-    # Reload in case the user edited the file
-    dataset_ctx = load_dataset_context(dataset_id)
-    if dataset_ctx is None:
-        print(f"ERROR: context file not found at {ctx_path}", file=sys.stderr)
-        sys.exit(1)
+    # Reload in case the user edited the file (skipped in dry-run — no file was saved)
+    if args.dry_run:
+        dataset_ctx = proposed_ctx
+    else:
+        dataset_ctx = load_dataset_context(dataset_id)
+        if dataset_ctx is None:
+            print(f"ERROR: context file not found at {ctx_path}", file=sys.stderr)
+            sys.exit(1)
+
+    # -------------------------------------------------------------------------
+    # Incremental: filter to changed / new records
+    # -------------------------------------------------------------------------
+    from graph_pipeline.sampler import compute_record_hashes
+    from graph_pipeline.context_store import load_record_hashes
+
+    current_hashes = compute_record_hashes(records, dataset_ctx.id_field)
+
+    if not args.full_ingest and current_hashes:
+        stored_hashes = load_record_hashes(dataset_id)
+        changed_ids = {
+            rid for rid, h in current_hashes.items()
+            if stored_hashes.get(rid) != h
+        }
+        ingest_records = [
+            r for r in records
+            if str(r.get(dataset_ctx.id_field, "")) in changed_ids
+        ]
+        unchanged_count = len(records) - len(ingest_records)
+        if unchanged_count:
+            _indent(
+                f"{unchanged_count} unchanged record(s) skipped; "
+                f"{len(ingest_records)} to process."
+            )
+        if not ingest_records:
+            _indent("All records unchanged — nothing to ingest.")
+            print("\nDone.")
+            return
+    else:
+        ingest_records = records
 
     # -------------------------------------------------------------------------
     # Step 5: Extract
     # -------------------------------------------------------------------------
     _step(5, TOTAL_STEPS, "Extracting nodes and relationships...")
     from graph_pipeline.extractor import extract_all
-    nodes, rels = await extract_all(records, dataset_ctx, shared_ctx, backend=backend)
+    nodes, rels = await extract_all(ingest_records, dataset_ctx, shared_ctx, backend=backend)
     _indent(f"{len(nodes)} nodes, {len(rels)} relationships")
 
     # -------------------------------------------------------------------------
@@ -206,7 +275,7 @@ async def main() -> None:
             sys.exit(1)
         driver = _neo4j.AsyncGraphDatabase.driver(uri, auth=(username, password))
 
-    integrity_errors = check_referential_integrity(nodes, rels, driver=driver)
+    integrity_errors = await check_referential_integrity(nodes, rels, driver=driver)
     dangling = [e for e in integrity_errors if e.severity == "error"]
     warnings_integrity = [e for e in integrity_errors if e.severity == "warning"]
 
@@ -262,6 +331,8 @@ async def main() -> None:
             await driver.close()
             sys.exit(1)
         await driver.close()
+        from graph_pipeline.context_store import save_record_hashes
+        save_record_hashes(dataset_id, current_hashes)
     else:
         _indent("(dry run — no data written)")
 
@@ -269,39 +340,41 @@ async def main() -> None:
     # Step 8: Merge dataset context into shared context
     # -------------------------------------------------------------------------
     _step(8, TOTAL_STEPS, "Merging dataset context into shared context...")
-    from graph_pipeline.context_store import MergeConflict, merge_into_shared, save_dataset_context
+    if args.dry_run:
+        _indent("(dry-run: skipping merge into shared context)")
+    else:
+        from graph_pipeline.context_store import MergeConflict, merge_into_shared, save_dataset_context
 
-    while True:
-        try:
-            updated_shared = merge_into_shared(dataset_ctx)
-            break
-        except MergeConflict as conflict:
-            print(f"\n  CONFLICT: \"{conflict.source_name}\"")
-            print(f"    existing → {conflict.existing_canonical}   (from: {conflict.existing_dataset})")
-            print(f"    proposed → {conflict.proposed_canonical}   (from: {conflict.new_dataset})")
+        while True:
             try:
-                chosen = input("  Enter canonical name to use, or Ctrl+C to abort: ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print("\nAborted.")
-                sys.exit(0)
-            if not chosen:
-                continue
-            # Update the dataset_ctx entry to use the chosen canonical name
-            if conflict.type == "node":
-                for nt in dataset_ctx.node_types:
-                    if nt.name == conflict.source_name:
-                        nt.maps_to = chosen
-            else:
-                for rt in dataset_ctx.relationship_types:
-                    if rt.name == conflict.source_name:
-                        rt.maps_to = chosen
-            save_dataset_context(dataset_ctx)
+                updated_shared = merge_into_shared(dataset_ctx)
+                break
+            except MergeConflict as conflict:
+                print(f"\n  CONFLICT: \"{conflict.source_name}\"")
+                print(f"    existing → {conflict.existing_canonical}   (from: {conflict.existing_dataset})")
+                print(f"    proposed → {conflict.proposed_canonical}   (from: {conflict.new_dataset})")
+                try:
+                    chosen = input("  Enter canonical name to use, or Ctrl+C to abort: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    print("\nAborted.")
+                    sys.exit(0)
+                if not chosen:
+                    continue
+                if conflict.type == "node":
+                    for nt in dataset_ctx.node_types:
+                        if nt.name == conflict.source_name:
+                            nt.maps_to = chosen
+                else:
+                    for rt in dataset_ctx.relationship_types:
+                        if rt.name == conflict.source_name:
+                            rt.maps_to = chosen
+                save_dataset_context(dataset_ctx)
 
-    new_types = [nt.name for nt in dataset_ctx.node_types
-                 if nt.name not in {n.name for n in shared_ctx.node_types}]
-    added_str = f" (added: {', '.join(new_types)})" if new_types else ""
-    _indent(f"shared_context updated to v{updated_shared.version}{added_str}")
-    _indent("shared_context saved.")
+        new_types = [nt.name for nt in dataset_ctx.node_types
+                     if nt.name not in {n.name for n in shared_ctx.node_types}]
+        added_str = f" (added: {', '.join(new_types)})" if new_types else ""
+        _indent(f"shared_context updated to v{updated_shared.version}{added_str}")
+        _indent("shared_context saved.")
 
     print("\nDone.")
 

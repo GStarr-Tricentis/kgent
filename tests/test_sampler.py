@@ -248,3 +248,64 @@ class TestComputeFingerprint:
         fp_label = compute_fingerprint(records, type_field="label")
         fp_auto = compute_fingerprint(records)  # 'label' not in _TYPE_FIELD_CANDIDATES → total count
         assert fp_label != fp_auto
+
+
+# ---------------------------------------------------------------------------
+# compute_record_hashes
+# ---------------------------------------------------------------------------
+
+class TestComputeRecordHashes:
+    def _make_records(self):
+        return [
+            {"uniqueId": "tc-001", "typeName": "TestCase", "name": "Login"},
+            {"uniqueId": "tc-002", "typeName": "TestCase", "name": "Logout"},
+        ]
+
+    def test_returns_dict(self):
+        from graph_pipeline.sampler import compute_record_hashes
+        result = compute_record_hashes(self._make_records(), "uniqueId")
+        assert isinstance(result, dict)
+
+    def test_keys_are_record_ids(self):
+        from graph_pipeline.sampler import compute_record_hashes
+        result = compute_record_hashes(self._make_records(), "uniqueId")
+        assert set(result.keys()) == {"tc-001", "tc-002"}
+
+    def test_values_are_16_char_hex(self):
+        from graph_pipeline.sampler import compute_record_hashes
+        result = compute_record_hashes(self._make_records(), "uniqueId")
+        for v in result.values():
+            assert isinstance(v, str)
+            assert len(v) == 16
+            assert all(c in "0123456789abcdef" for c in v)
+
+    def test_deterministic(self):
+        from graph_pipeline.sampler import compute_record_hashes
+        records = self._make_records()
+        assert compute_record_hashes(records, "uniqueId") == compute_record_hashes(records, "uniqueId")
+
+    def test_changed_record_produces_different_hash(self):
+        from graph_pipeline.sampler import compute_record_hashes
+        original = [{"uniqueId": "tc-001", "name": "Login"}]
+        modified = [{"uniqueId": "tc-001", "name": "Login CHANGED"}]
+        h_orig = compute_record_hashes(original, "uniqueId")["tc-001"]
+        h_mod = compute_record_hashes(modified, "uniqueId")["tc-001"]
+        assert h_orig != h_mod
+
+    def test_records_without_id_field_skipped(self):
+        from graph_pipeline.sampler import compute_record_hashes
+        records = [
+            {"uniqueId": "tc-001", "name": "Login"},
+            {"name": "No ID here"},
+        ]
+        result = compute_record_hashes(records, "uniqueId")
+        assert "tc-001" in result
+        assert len(result) == 1
+
+    def test_hash_independent_of_dict_key_insertion_order(self):
+        from graph_pipeline.sampler import compute_record_hashes
+        r1 = {"uniqueId": "tc-001", "name": "Login", "status": "active"}
+        r2 = {"status": "active", "uniqueId": "tc-001", "name": "Login"}
+        h1 = compute_record_hashes([r1], "uniqueId")["tc-001"]
+        h2 = compute_record_hashes([r2], "uniqueId")["tc-001"]
+        assert h1 == h2

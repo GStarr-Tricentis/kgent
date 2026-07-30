@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 from graph_pipeline.cypher_generator import (
     generate_constraint_statements,
+    generate_extraction_source_index_statements,
     generate_node_merge,
     generate_relationship_merge,
 )
@@ -91,18 +92,19 @@ async def _run_batch(
 # ---------------------------------------------------------------------------
 
 async def create_constraints(labels: list[str], driver) -> None:
-    """Create uniqueness constraints for all node labels.
+    """Create uniqueness constraints and extraction_source indexes for all node labels.
 
     Raises on failure — do not attempt writes without constraints in place.
     """
     statements = generate_constraint_statements(labels)
+    index_statements = generate_extraction_source_index_statements(labels)
     async with driver.session() as session:
-        for stmt in statements:
+        for stmt in statements + index_statements:
             try:
                 await session.run(stmt)
             except Exception as exc:
                 raise RuntimeError(
-                    f"Failed to create constraint for statement '{stmt}': {exc}"
+                    f"Failed to create constraint/index for statement '{stmt}': {exc}"
                 ) from exc
 
 
