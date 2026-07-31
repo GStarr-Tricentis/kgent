@@ -4,6 +4,12 @@ Node types and relationships have already been decided. Your job is to identify 
 values are unstructured or semi-structured text that may contain implicit references to entities
 or relationships not captured by the explicit schema rules.
 
+ALREADY-PROPOSED NODE TYPES:
+{proposed_node_types_json}
+
+ALREADY-PROPOSED RELATIONSHIP TYPES:
+{proposed_relationship_types_json}
+
 DATASET STRUCTURE SUMMARY:
 {structure_summary}
 
@@ -24,6 +30,7 @@ no explanation, no markdown, no extra text:
 
 Rules:
 - Only include fields that actually appear in the sample records
+- Do NOT include fields already covered by the already-proposed schema above (FK fields captured by implicit_relationships, association array fields, or fields that cleanly map to a known node or relationship type)
 - Do NOT include fields that are already clean foreign keys (ending in "Id", "UniqueId")
 - Do NOT include fields that are simple enums or booleans
 - Return {{"fields": []}} if no ambiguous fields exist

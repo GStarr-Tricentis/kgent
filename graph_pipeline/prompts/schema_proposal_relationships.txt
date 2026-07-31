@@ -18,7 +18,7 @@ TASK — return a JSON object with two keys:
    Example: {{"name": "covers", "maps_to": "COVERS", "from": "TestCase", "to": "Requirement"}}
 
 2. "implicit_relationships": foreign key references embedded in record fields (e.g. a field ending in "UniqueId" or "Id" that points to another node).
-   Example: {{"description": "test step references a module", "pattern": "step_uses_module", "edge_name": "moduleUniqueId", "maps_to": "USES_MODULE", "cross_dataset": false, "target_dataset_id": null}}
+   Example: {{"description": "test step references a module", "pattern": "step_uses_module", "edge_name": "moduleUniqueId", "maps_to": "USES_MODULE", "from_type": "TestStep", "to_type": "Module", "cross_dataset": false, "target_dataset_id": null}}
 
 Return ONLY this JSON object — no explanation, no markdown, no extra text.
 Always include all three keys: "relationship_types", "implicit_relationships", and "association_config".
@@ -28,7 +28,7 @@ Always include all three keys: "relationship_types", "implicit_relationships", a
     {{"name": "<edgeName from associations>", "maps_to": "<SCREAMING_SNAKE_CASE>", "from": "<from node label>", "to": "<to node label>"}}
   ],
   "implicit_relationships": [
-    {{"description": "<what this FK means>", "pattern": "<short_snake_case_name>", "edge_name": "<field name>", "maps_to": "<SCREAMING_SNAKE_CASE>", "cross_dataset": false, "target_dataset_id": null}}
+    {{"description": "<what this FK means>", "pattern": "<short_snake_case_name>", "edge_name": "<field name>", "maps_to": "<SCREAMING_SNAKE_CASE>", "from_type": "<canonical label of the source node>", "to_type": "<canonical label of the target node>", "cross_dataset": false, "target_dataset_id": null}}
   ],
   "association_config": {{
     "array_field": "<field name of the edge list, e.g. 'associations', 'links', 'edges', 'relationships'>",

@@ -18,7 +18,7 @@ from graph_pipeline.context_store import (
     NestedCollection,
     SharedContext,
 )
-from graph_pipeline.sampler import summarize_structure
+from graph_pipeline.sampler import _detect_type_field, summarize_structure
 
 logger = logging.getLogger(__name__)
 
@@ -138,13 +138,23 @@ async def _propose_node_types(
     shared_context: SharedContext,
     backend: ModelBackend,
     max_retries: int,
+    type_field: str | None = None,
 ) -> tuple[list[DatasetNodeType], dict]:
     """Return (node_types, structural_config). structural_config is {} if the LLM omits it."""
     template = _NODES_PROMPT_PATH.read_text(encoding="utf-8")
+
+    if type_field and any(type_field in r for r in sample):
+        by_type: dict[str, list[dict]] = {}
+        for r in sample:
+            by_type.setdefault(r.get(type_field, "__untyped__"), []).append(r)
+        node_sample = [r for recs in by_type.values() for r in recs[:2]]
+    else:
+        node_sample = sample[:10]
+
     prompt = template.format(
         shared_context_yaml=_serialize_shared_context(shared_context),
         structure_summary=summarize_structure(sample),
-        sample_records_json=json.dumps(sample[:10], indent=2, ensure_ascii=False),
+        sample_records_json=json.dumps(node_sample, indent=2, ensure_ascii=False),
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -263,10 +273,22 @@ async def _propose_ambiguous_fields(
     sample: list[dict],
     backend: ModelBackend,
     max_retries: int,
+    node_types: list[DatasetNodeType] | None = None,
+    relationship_types: list[DatasetRelationshipType] | None = None,
 ) -> list[str]:
     """Return field names whose values may contain implicit entity/relationship references."""
     template = _AMBIGUOUS_PROMPT_PATH.read_text(encoding="utf-8")
+    proposed_node_types_json = json.dumps(
+        [{"name": nt.name, "maps_to": nt.maps_to} for nt in (node_types or [])],
+        ensure_ascii=False,
+    )
+    proposed_relationship_types_json = json.dumps(
+        [{"name": rt.name, "maps_to": rt.maps_to} for rt in (relationship_types or [])],
+        ensure_ascii=False,
+    )
     prompt = template.format(
+        proposed_node_types_json=proposed_node_types_json,
+        proposed_relationship_types_json=proposed_relationship_types_json,
         structure_summary=summarize_structure(sample),
         sample_records_json=json.dumps(sample[:10], indent=2, ensure_ascii=False),
     )
@@ -321,11 +343,18 @@ async def propose_dataset_context(
     """
     import datetime
 
-    node_types, structural_config = await _propose_node_types(sample, shared_context, backend, max_retries)
+    type_field = _detect_type_field(sample)
+    node_types, structural_config = await _propose_node_types(
+        sample, shared_context, backend, max_retries, type_field=type_field
+    )
     rel_types, implicit_rels, assoc_config_dict = await _propose_relationship_types(
         sample, node_types, backend, max_retries
     )
-    ambiguous_fields = await _propose_ambiguous_fields(sample, backend, max_retries)
+    ambiguous_fields = await _propose_ambiguous_fields(
+        sample, backend, max_retries,
+        node_types=node_types,
+        relationship_types=rel_types,
+    )
 
     # hierarchy_config
     hierarchy_config: HierarchyConfig | None = None
@@ -369,11 +398,16 @@ async def propose_dataset_context(
     )
 
 
-def validate_proposed_context(ctx: DatasetContext, sample: list[dict]) -> list[str]:
+def validate_proposed_context(
+    ctx: DatasetContext,
+    sample: list[dict],
+    type_field: str | None = None,
+) -> list[str]:
     """Validate a proposed DatasetContext against the sample. Returns warning strings."""
     warnings: list[str] = []
 
-    sample_type_names = {r.get(ctx.type_field) for r in sample if ctx.type_field in r}
+    effective_type_field = type_field if type_field is not None else ctx.type_field
+    sample_type_names = {r.get(effective_type_field) for r in sample if effective_type_field in r}
     proposed_canonical_labels = {nt.maps_to for nt in ctx.node_types}
 
     for nt in ctx.node_types:
@@ -393,6 +427,13 @@ def validate_proposed_context(ctx: DatasetContext, sample: list[dict]) -> list[s
             warnings.append(
                 f"Relationship '{rt.name}' to_type '{rt.to_type}' "
                 f"is not in proposed node labels {sorted(proposed_canonical_labels)}"
+            )
+
+    mapped_names = {nt.name for nt in ctx.node_types}
+    for value in sorted(v for v in sample_type_names if v is not None):
+        if value not in mapped_names:
+            warnings.append(
+                f"Type '{value}' found in sample but has no mapping in proposed node_types"
             )
 
     return warnings

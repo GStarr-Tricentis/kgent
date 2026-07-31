@@ -74,6 +74,8 @@ class ImplicitRelationship(BaseModel):
     pattern: str
     edge_name: str
     maps_to: str
+    from_type: str = ""
+    to_type: str = ""
     cross_dataset: bool = False
     target_dataset_id: str | None = None
 

@@ -188,5 +188,6 @@ def compute_fingerprint(records: list[dict], type_field: str | None = None) -> s
         counts: Counter = Counter(r.get(resolved, "__untyped__") for r in records)
     else:
         counts = Counter({"__total__": len(records)})
-    payload = json.dumps(dict(counts), sort_keys=True)
+    all_keys = sorted({k for r in records for k in r.keys()})
+    payload = json.dumps({"types": dict(counts), "keys": all_keys}, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]

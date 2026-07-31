@@ -84,6 +84,9 @@ async def main() -> None:
     parser.add_argument("--full-ingest", action="store_true",
                         help="Process all records regardless of per-record hash cache; "
                              "also ensures the shared context merge runs even when record hashes are unchanged")
+    parser.add_argument("--prune-deleted", action="store_true",
+                        help="Soft-delete nodes for records no longer present in the source file "
+                             "(sets deleted_at; nodes remain in the graph)")
     parser.add_argument("--config", default="kgent/config/config.yaml")
     parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
                         help="Model provider (default: local)")
@@ -226,9 +229,10 @@ async def main() -> None:
     from graph_pipeline.context_store import load_record_hashes
 
     current_hashes = compute_record_hashes(records, dataset_ctx.id_field)
+    stored_hashes = load_record_hashes(dataset_id)
+    deleted_ids = set(stored_hashes.keys()) - set(current_hashes.keys())
 
     if not args.full_ingest and current_hashes:
-        stored_hashes = load_record_hashes(dataset_id)
         changed_ids = {
             rid for rid, h in current_hashes.items()
             if stored_hashes.get(rid) != h
@@ -243,7 +247,9 @@ async def main() -> None:
                 f"{unchanged_count} unchanged record(s) skipped; "
                 f"{len(ingest_records)} to process."
             )
-        if not ingest_records:
+        if deleted_ids:
+            _indent(f"{len(deleted_ids)} deleted record(s) detected.")
+        if not ingest_records and not (args.prune_deleted and deleted_ids):
             _indent("All records unchanged — nothing to ingest.")
             print("\nDone.")
             return
@@ -279,13 +285,7 @@ async def main() -> None:
     dangling = [e for e in integrity_errors if e.severity == "error"]
     warnings_integrity = [e for e in integrity_errors if e.severity == "warning"]
 
-    # Extract the missing IDs from dangling-ref errors so we can drop those edges.
-    import re as _re
-    dangling_ids: set[str] = set()
-    for e in dangling:
-        m = _re.search(r"'([^']+)'", e.message)
-        if m:
-            dangling_ids.add(m.group(1))
+    dangling_ids = {e.entity_id for e in dangling if e.entity_id}
 
     if dangling_ids:
         before = len(rels)
@@ -330,6 +330,12 @@ async def main() -> None:
             print("\nERROR: write errors occurred.", file=sys.stderr)
             await driver.close()
             sys.exit(1)
+        if args.prune_deleted and deleted_ids:
+            from graph_pipeline.neo4j_writer import soft_delete_nodes
+            namespaced = [f"{dataset_id}:{rid}" for rid in deleted_ids]
+            soft_deleted_count = await soft_delete_nodes(namespaced, driver, dataset_id)
+            _indent(f"  {soft_deleted_count} node(s) soft-deleted (deleted_at set; not removed from graph)")
+            _indent("  Query with: MATCH (n) WHERE n.deleted_at IS NOT NULL")
         await driver.close()
         from graph_pipeline.context_store import save_record_hashes
         save_record_hashes(dataset_id, current_hashes)

@@ -9,6 +9,7 @@ from pathlib import Path
 import anyio
 
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+_REPO_ROOT = Path(__file__).parent
 logger = logging.getLogger(__name__)
 
 
@@ -47,7 +48,7 @@ async def _mcp_loop(
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Open-weight LLM agent")
-    parser.add_argument("--config", default="kgent/config/config.yaml")
+    parser.add_argument("--config", default=str(_REPO_ROOT / "kgent/config/config.yaml"))
     parser.add_argument("--model", default=None, help="Override model_name from config")
     parser.add_argument("--prompt", default=None, help="Single prompt (non-interactive)")
     parser.add_argument("--debug", action="store_true")
@@ -72,7 +73,7 @@ async def main() -> None:
     config = load_config(args.config)
     if args.model:
         config.model.model_name = args.model
-    system_prompt_path = Path("kgent/prompts/system.txt")
+    system_prompt_path = _REPO_ROOT / "kgent/prompts/system.txt"
     system_prompt = system_prompt_path.read_text() if system_prompt_path.exists() else ""
 
     skip_servers = frozenset({"neo4j"}) if args.cypher_tool else frozenset()
@@ -87,7 +88,7 @@ async def main() -> None:
             if args.cypher_tool:
                 from kgent.tools.cypher_tool import make_cypher_tool
                 registry.register(await make_cypher_tool(config))
-                graph_prompt = Path("kgent/agent/prompts/text_to_cypher_tool.txt").read_text()
+                graph_prompt = (_REPO_ROOT / "kgent/agent/prompts/text_to_cypher_tool.txt").read_text()
                 system_prompt = system_prompt + ("\n\n" if system_prompt else "") + graph_prompt
 
             if args.raw_data:
