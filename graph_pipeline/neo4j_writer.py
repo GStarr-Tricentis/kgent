@@ -175,6 +175,19 @@ async def write_relationships(
     return result
 
 
+async def soft_delete_nodes(node_ids: list[str], driver, dataset_id: str) -> int:
+    """Set deleted_at = datetime() on nodes whose id is in node_ids. Returns matched count."""
+    if not node_ids:
+        return 0
+    async with driver.session() as session:
+        result = await session.run(
+            "UNWIND $ids AS id MATCH (n {id: id}) SET n.deleted_at = datetime() RETURN count(n) AS cnt",
+            ids=node_ids,
+        )
+        record = await result.single()
+        return record["cnt"] if record else 0
+
+
 async def write_all(
     nodes: list[Node],
     rels: list[Relationship],
