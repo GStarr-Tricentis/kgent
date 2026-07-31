@@ -22,6 +22,7 @@ def make_dataset_ctx(
     association_config=..., # sentinel: default to Tosca-compatible AssociationConfig
     nested_collections=None,
     property_paths=None,
+    path_fk_relationships=None,
 ):
     from graph_pipeline.context_store import (
         AssociationConfig,
@@ -32,6 +33,7 @@ def make_dataset_ctx(
         HierarchyConfig,
         ImplicitRelationship,
         NestedCollection,
+        PathFKRelationship,
     )
 
     # Default to Tosca-compatible structural config so existing fixtures keep working.
@@ -66,6 +68,10 @@ def make_dataset_ctx(
     for nc in (nested_collections or []):
         nc_objs.append(NestedCollection(**nc))
 
+    pfk_objs = []
+    for pfk in (path_fk_relationships or []):
+        pfk_objs.append(PathFKRelationship(**pfk))
+
     return DatasetContext(
         dataset_id=dataset_id,
         node_types=nt_objs,
@@ -77,6 +83,7 @@ def make_dataset_ctx(
         association_config=association_config,
         nested_collections=nc_objs,
         property_paths=property_paths or [],
+        path_fk_relationships=pfk_objs,
     )
 
 
@@ -1273,3 +1280,96 @@ class TestPropertyPaths:
         nodes, _ = await extract_all(records, ctx, shared_ctx=None)
         node = next(n for n in nodes if n.source_record_id == "r1")
         assert node.properties.get("businessType") == "AnyUIWindow"
+
+
+# ---------------------------------------------------------------------------
+# path_fk_relationships — path-string FK resolution (Rule 6b)
+# ---------------------------------------------------------------------------
+
+class TestPathFKRelationships:
+    def _ctx(self, path_fk_relationships, node_types=None):
+        return make_dataset_ctx(
+            node_types=node_types or [
+                {"name": "Parent", "maps_to": "Parent"},
+                {"name": "Child", "maps_to": "Child"},
+            ],
+            hierarchy_config=None,
+            association_config=None,
+            path_fk_relationships=path_fk_relationships,
+        )
+
+    async def test_top_level_path_fk(self):
+        from graph_pipeline.extractor import extract_all
+        records = [
+            {"uniqueId": "p1", "typeName": "Parent", "childPath": "/root/child-a"},
+            {"uniqueId": "c1", "typeName": "Child",  "nodePath": "/root/child-a"},
+        ]
+        ctx = self._ctx([{
+            "container_path": None,
+            "fk_field": "childPath",
+            "target_field": "nodePath",
+            "maps_to": "HAS_CHILD",
+            "from_type": "Parent",
+            "to_type": "Child",
+        }])
+        _, rels = await extract_all(records, ctx, shared_ctx=None)
+        path_rels = [r for r in rels if r.type == "HAS_CHILD"]
+        assert len(path_rels) == 1
+        assert path_rels[0].from_id == "ds1:p1"
+        assert path_rels[0].to_id == "ds1:c1"
+
+    async def test_nested_container_path_fk(self):
+        from graph_pipeline.extractor import extract_all
+        records = [
+            {
+                "uniqueId": "el1",
+                "typeName": "Parent",
+                "details": {
+                    "entries": [
+                        {"testCaseNodePath": "/root/tc-a"},
+                        {"testCaseNodePath": None},
+                    ]
+                },
+            },
+            {"uniqueId": "tc1", "typeName": "Child", "nodePath": "/root/tc-a"},
+        ]
+        ctx = self._ctx([{
+            "container_path": "details.entries",
+            "fk_field": "testCaseNodePath",
+            "target_field": "nodePath",
+            "maps_to": "REFERENCES",
+            "from_type": "Parent",
+            "to_type": "Child",
+        }])
+        _, rels = await extract_all(records, ctx, shared_ctx=None)
+        ref_rels = [r for r in rels if r.type == "REFERENCES"]
+        assert len(ref_rels) == 1
+        assert ref_rels[0].from_id == "ds1:el1"
+        assert ref_rels[0].to_id == "ds1:tc1"
+
+    async def test_unresolved_path_skipped(self):
+        from graph_pipeline.extractor import extract_all
+        records = [
+            {"uniqueId": "p1", "typeName": "Parent", "childPath": "/does/not/exist"},
+        ]
+        ctx = self._ctx([{
+            "container_path": None,
+            "fk_field": "childPath",
+            "target_field": "nodePath",
+            "maps_to": "HAS_CHILD",
+            "from_type": "Parent",
+            "to_type": "Child",
+        }])
+        _, rels = await extract_all(records, ctx, shared_ctx=None)
+        assert not any(r.type == "HAS_CHILD" for r in rels)
+
+    async def test_empty_path_fk_relationships(self):
+        from graph_pipeline.extractor import extract_all
+        records = [
+            {"uniqueId": "p1", "typeName": "Parent", "nodePath": "/root/p1"},
+        ]
+        ctx = self._ctx([])
+        nodes, rels = await extract_all(records, ctx, shared_ctx=None)
+        assert len(nodes) == 1
+        assert all(r.extraction_source.value != "RULE_BASED" or r.type != "HAS_CHILD"
+                   for r in rels)

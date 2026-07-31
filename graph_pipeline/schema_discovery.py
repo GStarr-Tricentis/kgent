@@ -16,6 +16,7 @@ from graph_pipeline.context_store import (
     HierarchyConfig,
     ImplicitRelationship,
     NestedCollection,
+    PathFKRelationship,
     SharedContext,
 )
 from graph_pipeline.sampler import _detect_type_field, summarize_structure
@@ -198,7 +199,7 @@ async def _propose_relationship_types(
     backend: ModelBackend,
     max_retries: int,
     hierarchy_field: str | None = None,
-) -> tuple[list[DatasetRelationshipType], list[ImplicitRelationship], dict]:
+) -> tuple[list[DatasetRelationshipType], list[ImplicitRelationship], list[PathFKRelationship], dict]:
     template = _RELS_PROMPT_PATH.read_text(encoding="utf-8")
     node_types_json = json.dumps(
         [{"name": nt.name, "maps_to": nt.maps_to} for nt in node_types],
@@ -255,11 +256,15 @@ async def _propose_relationship_types(
             ]
             assoc_raw = data.get("association_config")
             assoc_config: dict = assoc_raw if isinstance(assoc_raw, dict) else {}
+            path_fk_rels = [
+                PathFKRelationship(**item)
+                for item in data.get("path_fk_relationships", [])
+            ]
             logger.info(
-                "rel_types succeeded on attempt %d: %d rel types, %d implicit",
-                attempt, len(rel_types), len(implicit_rels),
+                "rel_types succeeded on attempt %d: %d rel types, %d implicit, %d path_fk",
+                attempt, len(rel_types), len(implicit_rels), len(path_fk_rels),
             )
-            return rel_types, implicit_rels, assoc_config
+            return rel_types, implicit_rels, path_fk_rels, assoc_config
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
             logger.warning("rel_types attempt %d failed: %s", attempt, exc)
             last_error = exc
@@ -366,7 +371,7 @@ async def propose_dataset_context(
     if isinstance(hc_raw, dict):
         hierarchy_field = hc_raw.get("field") or None
 
-    rel_types, implicit_rels, assoc_config_dict = await _propose_relationship_types(
+    rel_types, implicit_rels, path_fk_rels, assoc_config_dict = await _propose_relationship_types(
         sample, node_types, backend, max_retries, hierarchy_field=hierarchy_field
     )
 
@@ -383,6 +388,9 @@ async def propose_dataset_context(
     for ir in implicit_rels:
         if ir.edge_name:
             handled_fields.append(ir.edge_name)
+    for pfk in path_fk_rels:
+        if pfk.fk_field:
+            handled_fields.append(pfk.fk_field)
 
     ambiguous_fields = await _propose_ambiguous_fields(
         sample, backend, max_retries,
@@ -431,6 +439,7 @@ async def propose_dataset_context(
         node_types=node_types,
         relationship_types=rel_types,
         implicit_relationships=implicit_rels,
+        path_fk_relationships=path_fk_rels,
         nested_collections=nested_collections,
         association_config=association_config,
         hierarchy_config=hierarchy_config,

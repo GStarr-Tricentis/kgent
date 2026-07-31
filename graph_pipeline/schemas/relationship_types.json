@@ -3,7 +3,7 @@
   "strict": true,
   "schema": {
     "type": "object",
-    "required": ["relationship_types", "implicit_relationships", "association_config"],
+    "required": ["relationship_types", "implicit_relationships", "association_config", "path_fk_relationships"],
     "additionalProperties": false,
     "properties": {
       "relationship_types": {
@@ -54,6 +54,22 @@
             }
           }
         ]
+      },
+      "path_fk_relationships": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["container_path", "fk_field", "target_field", "maps_to", "from_type", "to_type"],
+          "additionalProperties": false,
+          "properties": {
+            "container_path": {"type": ["string", "null"]},
+            "fk_field":       {"type": "string"},
+            "target_field":   {"type": "string"},
+            "maps_to":        {"type": "string"},
+            "from_type":      {"type": "string"},
+            "to_type":        {"type": "string"}
+          }
+        }
       }
     }
   }

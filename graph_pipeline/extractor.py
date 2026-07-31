@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from kgent.agent.types import ModelBackend
-from graph_pipeline.context_store import DatasetContext, HierarchyConfig, SharedContext
+from graph_pipeline.context_store import DatasetContext, HierarchyConfig, PathFKRelationship, SharedContext
 from graph_pipeline.models import ExtractionSource, Node, Relationship
 
 logger = logging.getLogger(__name__)
@@ -292,6 +292,18 @@ async def extract_all(
     all_nodes: list[Node] = []
     all_rels: list[Relationship] = []
 
+    # Pre-build path lookup indices for Rule 6b.
+    # One index per distinct target_field used across path_fk_relationships.
+    _path_indices: dict[str, dict[str, str]] = {}
+    for pfk in dataset_ctx.path_fk_relationships:
+        tf = pfk.target_field
+        if tf not in _path_indices:
+            _path_indices[tf] = {
+                str(r[tf]): f"{dataset_id}:{r[id_field]}"
+                for r in records
+                if r.get(tf) is not None and r.get(id_field) is not None
+            }
+
     # ----- Rule 1: id_field + type_field → Node --------------------------------
     for record in records:
         uid = record.get(id_field)
@@ -437,6 +449,61 @@ async def extract_all(
                     extraction_source=ExtractionSource.RULE_BASED,
                 )
             )
+
+    # ----- Rule 6b: path-valued FK relationships ----------------------------
+    for pfk in dataset_ctx.path_fk_relationships:
+        index = _path_indices.get(pfk.target_field, {})
+        for record in records:
+            this_uid = record.get(id_field)
+            this_type = record.get(type_field)
+            if not this_uid:
+                continue
+            this_label = type_map.get(this_type, this_type) if this_type else ""
+            from_id = f"{dataset_id}:{this_uid}"
+            if pfk.container_path is None:
+                fk_value = record.get(pfk.fk_field)
+                if not fk_value:
+                    continue
+                to_id = index.get(str(fk_value))
+                if not to_id:
+                    continue
+                all_rels.append(
+                    Relationship(
+                        from_id=from_id,
+                        to_id=to_id,
+                        from_label=pfk.from_type or this_label,
+                        to_label=pfk.to_type,
+                        type=pfk.maps_to,
+                        properties={},
+                        source_record_id=this_uid,
+                        extraction_source=ExtractionSource.RULE_BASED,
+                    )
+                )
+            else:
+                container = _get_nested(record, pfk.container_path)
+                if not isinstance(container, list):
+                    continue
+                for item in container:
+                    if not isinstance(item, dict):
+                        continue
+                    fk_value = item.get(pfk.fk_field)
+                    if not fk_value:
+                        continue
+                    to_id = index.get(str(fk_value))
+                    if not to_id:
+                        continue
+                    all_rels.append(
+                        Relationship(
+                            from_id=from_id,
+                            to_id=to_id,
+                            from_label=pfk.from_type or this_label,
+                            to_label=pfk.to_type,
+                            type=pfk.maps_to,
+                            properties={},
+                            source_record_id=this_uid,
+                            extraction_source=ExtractionSource.RULE_BASED,
+                        )
+                    )
 
     # ----- Rule 7: LLM-assisted extraction for ambiguous fields --------------
     if dataset_ctx.ambiguous_fields and backend is not None:
