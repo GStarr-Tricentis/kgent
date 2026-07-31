@@ -279,13 +279,7 @@ async def main() -> None:
     dangling = [e for e in integrity_errors if e.severity == "error"]
     warnings_integrity = [e for e in integrity_errors if e.severity == "warning"]
 
-    # Extract the missing IDs from dangling-ref errors so we can drop those edges.
-    import re as _re
-    dangling_ids: set[str] = set()
-    for e in dangling:
-        m = _re.search(r"'([^']+)'", e.message)
-        if m:
-            dangling_ids.add(m.group(1))
+    dangling_ids = {e.entity_id for e in dangling if e.entity_id}
 
     if dangling_ids:
         before = len(rels)

@@ -20,6 +20,7 @@ class ValidationError:
     severity: Literal["error", "warning"]
     message: str
     record_id: str | None
+    entity_id: str | None = None
 
 
 @dataclass
@@ -76,6 +77,7 @@ async def check_referential_integrity(
                     severity="warning",
                     message=f"Endpoint '{missing_id}' not found in current batch (dry-run)",
                     record_id=record_id,
+                    entity_id=missing_id,
                 )
             )
         return errors
@@ -100,6 +102,7 @@ async def check_referential_integrity(
                     severity="error",
                     message=f"Endpoint '{missing_id}' not found in batch or in Neo4j",
                     record_id=record_id,
+                    entity_id=missing_id,
                 )
             )
 
