@@ -40,6 +40,10 @@ Always include all three keys: "relationship_types", "implicit_relationships", a
 }}
 
 Set association_config to null if no explicit edge array exists in the data.
+
+HIERARCHY PATH FIELD:
+{hierarchy_field_note}
+
 ---
 
 Rules:
@@ -47,3 +51,5 @@ Rules:
 - "from" and "to" must be canonical labels from NODE TYPES ALREADY DECIDED
 - If you see no associations and no FK fields, return empty arrays — do not invent relationships
 - Use SCREAMING_SNAKE_CASE for all maps_to values
+- Do NOT propose the hierarchy path field as an implicit FK — its values are tree-location strings (e.g. "/Root/Folder/Entity"), not record IDs referencing other nodes
+- Implicit FK edge_name values must be top-level record fields whose raw values directly match the id_field (typically uniqueId) of another record — fields ending in "UniqueId" or "Id" are the primary signal

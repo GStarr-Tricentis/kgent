@@ -197,6 +197,7 @@ async def _propose_relationship_types(
     node_types: list[DatasetNodeType],
     backend: ModelBackend,
     max_retries: int,
+    hierarchy_field: str | None = None,
 ) -> tuple[list[DatasetRelationshipType], list[ImplicitRelationship], dict]:
     template = _RELS_PROMPT_PATH.read_text(encoding="utf-8")
     node_types_json = json.dumps(
@@ -217,10 +218,17 @@ async def _propose_relationship_types(
 
     rel_sample = sorted(sample, key=_richness, reverse=True)[:50]
 
+    hierarchy_field_note = (
+        f'"{hierarchy_field}" — values are structural path strings '
+        f'(e.g. "/Root/Folder/Entity"), not record IDs'
+        if hierarchy_field
+        else "(none identified for this dataset)"
+    )
     prompt = template.format(
         node_types_json=node_types_json,
         structure_summary=summarize_structure(sample),
         sample_records_json=json.dumps(rel_sample, indent=2, ensure_ascii=False),
+        hierarchy_field_note=hierarchy_field_note,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -275,6 +283,7 @@ async def _propose_ambiguous_fields(
     max_retries: int,
     node_types: list[DatasetNodeType] | None = None,
     relationship_types: list[DatasetRelationshipType] | None = None,
+    handled_fields: list[str] | None = None,
 ) -> list[str]:
     """Return field names whose values may contain implicit entity/relationship references."""
     template = _AMBIGUOUS_PROMPT_PATH.read_text(encoding="utf-8")
@@ -286,11 +295,15 @@ async def _propose_ambiguous_fields(
         [{"name": rt.name, "maps_to": rt.maps_to} for rt in (relationship_types or [])],
         ensure_ascii=False,
     )
+    handled_fields_str = (
+        ", ".join(sorted(set(handled_fields))) if handled_fields else "(none)"
+    )
     prompt = template.format(
         proposed_node_types_json=proposed_node_types_json,
         proposed_relationship_types_json=proposed_relationship_types_json,
         structure_summary=summarize_structure(sample),
         sample_records_json=json.dumps(sample[:10], indent=2, ensure_ascii=False),
+        handled_fields=handled_fields_str,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -347,13 +360,35 @@ async def propose_dataset_context(
     node_types, structural_config = await _propose_node_types(
         sample, shared_context, backend, max_retries, type_field=type_field
     )
+
+    hierarchy_field: str | None = None
+    hc_raw = structural_config.get("hierarchy_config")
+    if isinstance(hc_raw, dict):
+        hierarchy_field = hc_raw.get("field") or None
+
     rel_types, implicit_rels, assoc_config_dict = await _propose_relationship_types(
-        sample, node_types, backend, max_retries
+        sample, node_types, backend, max_retries, hierarchy_field=hierarchy_field
     )
+
+    handled_fields: list[str] = []
+    if hierarchy_field:
+        handled_fields.append(hierarchy_field)
+    for nc in structural_config.get("nested_collections", []):
+        if isinstance(nc, dict):
+            field_path = nc.get("field", "")
+            if field_path:
+                handled_fields.append(field_path.split(".")[0])
+    if assoc_config_dict.get("array_field"):
+        handled_fields.append(assoc_config_dict["array_field"])
+    for ir in implicit_rels:
+        if ir.edge_name:
+            handled_fields.append(ir.edge_name)
+
     ambiguous_fields = await _propose_ambiguous_fields(
         sample, backend, max_retries,
         node_types=node_types,
         relationship_types=rel_types,
+        handled_fields=handled_fields,
     )
 
     # hierarchy_config

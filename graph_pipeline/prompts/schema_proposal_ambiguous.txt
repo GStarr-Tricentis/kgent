@@ -10,6 +10,9 @@ ALREADY-PROPOSED NODE TYPES:
 ALREADY-PROPOSED RELATIONSHIP TYPES:
 {proposed_relationship_types_json}
 
+ALREADY-HANDLED STRUCTURAL FIELDS (do not flag these as ambiguous):
+{handled_fields}
+
 DATASET STRUCTURE SUMMARY:
 {structure_summary}
 
@@ -34,3 +37,4 @@ Rules:
 - Do NOT include fields that are already clean foreign keys (ending in "Id", "UniqueId")
 - Do NOT include fields that are simple enums or booleans
 - Return {{"fields": []}} if no ambiguous fields exist
+- Do NOT include fields listed under ALREADY-HANDLED STRUCTURAL FIELDS — hierarchy path fields, nested collection fields, association array fields, and implicit FK edge name fields are fully processed by structural rules and must not be re-examined here
