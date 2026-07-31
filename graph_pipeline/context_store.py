@@ -122,6 +122,7 @@ class DatasetContext(BaseModel):
     hierarchy_config: HierarchyConfig | None = None
     design_decisions: list[DesignDecision] = Field(default_factory=list)
     ambiguous_fields: list[str] = Field(default_factory=list)
+    property_paths: list[str] = Field(default_factory=list)
     source_fingerprint: str = ""
     schema_version: int = 0
 

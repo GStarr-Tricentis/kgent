@@ -39,6 +39,29 @@ def _scalar_properties(record: dict) -> dict:
     }
 
 
+def _resolve_property_paths(record: dict, paths: list[str]) -> dict:
+    """Resolve dot-path entries and return merged scalar properties.
+    For each path:
+    - If the resolved value is a dict, merge its scalar key-value pairs.
+    - If the resolved value is a scalar (not dict/list), add it under the
+      last path segment as key.
+    Callers should apply top-level scalars after this result so that
+    top-level values win on collision.
+    """
+    extra: dict = {}
+    for path in paths:
+        value = _get_nested(record, path)
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if not isinstance(v, (dict, list)):
+                    extra[k] = v
+        elif not isinstance(value, list):
+            extra[path.split(".")[-1]] = value
+    return extra
+
+
 def _node_type_map(dataset_ctx: DatasetContext) -> dict[str, str]:
     return {nt.name: nt.maps_to for nt in dataset_ctx.node_types}
 
@@ -280,7 +303,10 @@ async def extract_all(
             Node(
                 id=f"{dataset_id}:{uid}",
                 label=label,
-                properties=_scalar_properties(record),
+                properties={
+                    **_resolve_property_paths(record, dataset_ctx.property_paths),
+                    **_scalar_properties(record),
+                },
                 source_record_id=uid,
                 extraction_source=ExtractionSource.RULE_BASED,
             )

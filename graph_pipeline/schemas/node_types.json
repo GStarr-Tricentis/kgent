@@ -50,6 +50,10 @@
             "id_field": {"type": "string"}
           }
         }
+      },
+      "property_paths": {
+        "type": "array",
+        "items": {"type": "string"}
       }
     }
   }

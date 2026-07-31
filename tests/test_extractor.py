@@ -21,6 +21,7 @@ def make_dataset_ctx(
     hierarchy_config=...,   # sentinel: default to Tosca-compatible HierarchyConfig
     association_config=..., # sentinel: default to Tosca-compatible AssociationConfig
     nested_collections=None,
+    property_paths=None,
 ):
     from graph_pipeline.context_store import (
         AssociationConfig,
@@ -75,6 +76,7 @@ def make_dataset_ctx(
         hierarchy_config=hierarchy_config,
         association_config=association_config,
         nested_collections=nc_objs,
+        property_paths=property_paths or [],
     )
 
 
@@ -1198,3 +1200,76 @@ class TestLlmExtractAmbiguous:
         )
         # Second batch succeeded and produced one node
         assert any(n.id == "ds1:cat-ok" for n in nodes)
+
+
+# ---------------------------------------------------------------------------
+# property_paths — flat nested dict merging into node properties
+# ---------------------------------------------------------------------------
+
+class TestPropertyPaths:
+    def _ctx(self, property_paths, node_types=None):
+        return make_dataset_ctx(
+            node_types=node_types or [{"name": "Item", "maps_to": "Item"}],
+            hierarchy_config=None,
+            association_config=None,
+            property_paths=property_paths,
+        )
+
+    async def test_flat_dict_merged_into_node_properties(self):
+        from graph_pipeline.extractor import extract_all
+        records = [
+            {
+                "uniqueId": "r1",
+                "typeName": "Item",
+                "attributes": {"requirementType": "Requirement", "weight": "1"},
+            }
+        ]
+        ctx = self._ctx(property_paths=["attributes"])
+        nodes, _ = await extract_all(records, ctx, shared_ctx=None)
+        node = next(n for n in nodes if n.source_record_id == "r1")
+        assert node.properties.get("requirementType") == "Requirement"
+        assert node.properties.get("weight") == "1"
+
+    async def test_top_level_scalar_wins_on_collision(self):
+        from graph_pipeline.extractor import extract_all
+        records = [
+            {
+                "uniqueId": "r1",
+                "typeName": "Item",
+                "name": "TopLevel",
+                "attributes": {"name": "Nested"},
+            }
+        ]
+        ctx = self._ctx(property_paths=["attributes"])
+        nodes, _ = await extract_all(records, ctx, shared_ctx=None)
+        node = next(n for n in nodes if n.source_record_id == "r1")
+        assert node.properties["name"] == "TopLevel"
+
+    async def test_empty_property_paths_unchanged(self):
+        from graph_pipeline.extractor import extract_all
+        records = [
+            {
+                "uniqueId": "r1",
+                "typeName": "Item",
+                "name": "X",
+                "attributes": {"businessType": "Widget"},
+            }
+        ]
+        ctx = self._ctx(property_paths=[])
+        nodes, _ = await extract_all(records, ctx, shared_ctx=None)
+        node = next(n for n in nodes if n.source_record_id == "r1")
+        assert "businessType" not in node.properties
+
+    async def test_scalar_dot_path(self):
+        from graph_pipeline.extractor import extract_all
+        records = [
+            {
+                "uniqueId": "r1",
+                "typeName": "Item",
+                "details": {"businessType": "AnyUIWindow", "kind": "module"},
+            }
+        ]
+        ctx = self._ctx(property_paths=["details.businessType"])
+        nodes, _ = await extract_all(records, ctx, shared_ctx=None)
+        node = next(n for n in nodes if n.source_record_id == "r1")
+        assert node.properties.get("businessType") == "AnyUIWindow"

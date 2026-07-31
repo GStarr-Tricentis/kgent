@@ -417,6 +417,11 @@ async def propose_dataset_context(
         except Exception as exc:
             logger.warning("Could not parse association_config: %s", exc)
 
+    property_paths: list[str] = [
+        p for p in structural_config.get("property_paths", [])
+        if isinstance(p, str)
+    ]
+
     return DatasetContext(
         dataset_id=dataset_id,
         source_file="",
@@ -430,6 +435,7 @@ async def propose_dataset_context(
         association_config=association_config,
         hierarchy_config=hierarchy_config,
         ambiguous_fields=ambiguous_fields,
+        property_paths=property_paths,
     )
 
 

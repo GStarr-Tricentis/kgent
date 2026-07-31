@@ -28,6 +28,8 @@ The object must have these keys:
 
 - "nested_collections": array of array-of-objects fields that should become child nodes. Set to [] if none.
 
+- "property_paths": dot-paths to top-level fields that are flat dicts of scalars (no arrays, no nested objects). These fields should be merged into node properties. Set to [] if none.
+
 Example response:
 
 {{
@@ -50,7 +52,8 @@ Example response:
       "edge_type": "HAS_ATTRIBUTE",
       "id_field": "uniqueId"
     }}
-  ]
+  ],
+  "property_paths": ["attributes"]
 }}
 
 Rules:
@@ -61,3 +64,4 @@ Rules:
 - Set hierarchy_config to null if the data has no path/breadcrumb field
 - Set nested_collections to [] if no array-of-objects fields should become child nodes
 - Do not invent fields that are not present in the sample data
+- Include a field in property_paths only if it is a dict whose values are ALL scalars (strings, numbers, booleans) — no arrays, no nested objects. Do NOT include fields already in nested_collections.
