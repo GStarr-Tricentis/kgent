@@ -403,8 +403,8 @@ async def extract_all(
                 Relationship(
                     from_id=f"{dataset_id}:{this_uid}",
                     to_id=f"{target_ds}:{fk_value}",
-                    from_label=this_label,
-                    to_label="",
+                    from_label=this_label or ir.from_type,
+                    to_label=ir.to_type,
                     type=rel_type,
                     properties={},
                     source_record_id=this_uid,

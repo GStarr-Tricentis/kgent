@@ -24,13 +24,15 @@
         "type": "array",
         "items": {
           "type": "object",
-          "required": ["description", "pattern", "edge_name", "maps_to", "cross_dataset", "target_dataset_id"],
+          "required": ["description", "pattern", "edge_name", "maps_to", "from_type", "to_type", "cross_dataset", "target_dataset_id"],
           "additionalProperties": false,
           "properties": {
             "description": {"type": "string"},
             "pattern": {"type": "string"},
             "edge_name": {"type": "string"},
             "maps_to": {"type": "string"},
+            "from_type": {"type": "string"},
+            "to_type": {"type": "string"},
             "cross_dataset": {"type": "boolean"},
             "target_dataset_id": {"type": ["string", "null"]}
           }
