@@ -471,4 +471,22 @@ def validate_proposed_context(
                 f"Type '{value}' found in sample but has no mapping in proposed node_types"
             )
 
+    if ctx.association_config is not None:
+        array_field = ctx.association_config.array_field
+        edge_name_subfield = ctx.association_config.edge_name_subfield
+        mapped_rel_names = {rt.name for rt in ctx.relationship_types}
+        seen_edge_names: set[str] = set()
+        for record in sample:
+            for assoc in record.get(array_field, []):
+                if isinstance(assoc, dict):
+                    edge_name = assoc.get(edge_name_subfield)
+                    if edge_name and isinstance(edge_name, str):
+                        seen_edge_names.add(edge_name)
+        for edge_name in sorted(seen_edge_names):
+            if edge_name not in mapped_rel_names:
+                warnings.append(
+                    f"Association edgeName '{edge_name}' found in sample "
+                    f"but has no mapping in relationship_types"
+                )
+
     return warnings
