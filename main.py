@@ -114,7 +114,7 @@ async def main() -> None:
             if args.prompt:
                 print(_reply(await runner.run(args.prompt)))
                 return
-            print("Open-weight agent ready. Ctrl-C to exit.")
+            print("Agent ready. Ctrl-C to exit.")
             while True:
                 try:
                     line = input("> ").strip()
