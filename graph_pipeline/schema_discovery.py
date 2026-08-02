@@ -243,7 +243,18 @@ async def _propose_relationship_types(
         [{"name": nt.name, "maps_to": nt.maps_to} for nt in node_types],
         indent=2,
     )
-    rel_sample = sorted(sample, key=_richness, reverse=True)
+    # Budget ~500k tokens for records (safe for 1M-context models).
+    # Trim richness-sorted records until the serialised size fits.
+    _REL_SAMPLE_MAX_CHARS = 2_000_000
+    rel_sample: list[dict] = []
+    _total_chars = 0
+    for _r in sorted(sample, key=_richness, reverse=True):
+        _r_chars = len(json.dumps(_r, ensure_ascii=False))
+        if _total_chars + _r_chars > _REL_SAMPLE_MAX_CHARS:
+            break
+        rel_sample.append(_r)
+        _total_chars += _r_chars
+    logger.info("rel_types sample: %d records / ~%d chars", len(rel_sample), _total_chars)
 
     hierarchy_field_note = (
         f'"{hierarchy_field}" — values are structural path strings '
