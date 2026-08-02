@@ -69,6 +69,38 @@ def _build_field_value_matrix(
     return {k: v[:n_values] for k, v in sorted(field_values.items()) if v}
 
 
+def _filter_ambiguous_by_uid_coverage(
+    fields: list[str],
+    sample: list[dict],
+    id_field: str,
+    threshold: float = 0.50,
+) -> list[str]:
+    uid_set = {str(r[id_field]) for r in sample if r.get(id_field) is not None}
+    if not uid_set:
+        return fields
+
+    kept = []
+    for field in fields:
+        values = [
+            str(r[field])
+            for r in sample
+            if r.get(field) is not None
+            and not isinstance(r.get(field), (dict, list))
+        ]
+        if not values:
+            logger.debug("ambiguous_fields filter: dropping '%s' (no values)", field)
+            continue
+        match_rate = sum(1 for v in values if v in uid_set) / len(values)
+        if match_rate >= threshold:
+            kept.append(field)
+        else:
+            logger.info(
+                "ambiguous_fields filter: dropping '%s' (uid match rate %.1f%% < %.0f%%)",
+                field, match_rate * 100, threshold * 100,
+            )
+    return kept
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -444,6 +476,11 @@ async def propose_dataset_context(
         handled_fields=handled_fields,
         id_field=structural_config.get("id_field") or "uniqueId",
         type_field=structural_config.get("type_field") or "typeName",
+    )
+    ambiguous_fields = _filter_ambiguous_by_uid_coverage(
+        ambiguous_fields,
+        sample,
+        id_field=structural_config.get("id_field") or "uniqueId",
     )
 
     # hierarchy_config

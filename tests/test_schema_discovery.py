@@ -472,6 +472,65 @@ class TestBuildFieldValueMatrix:
         assert len(result["status"]) == 2
 
 
+class TestFilterAmbiguousByUidCoverage:
+    def test_field_with_no_uid_matches_filtered(self):
+        from graph_pipeline.schema_discovery import _filter_ambiguous_by_uid_coverage
+
+        sample = [
+            {"uniqueId": "tc-001", "label": "Setup - Install JRE"},
+            {"uniqueId": "tc-002", "label": "Device Compatibility"},
+            {"uniqueId": "tc-003", "label": "Regression Suite"},
+        ]
+        result = _filter_ambiguous_by_uid_coverage(["label"], sample, id_field="uniqueId")
+        assert result == []
+
+    def test_field_with_high_uid_match_rate_kept(self):
+        from graph_pipeline.schema_discovery import _filter_ambiguous_by_uid_coverage
+
+        sample = [
+            {"uniqueId": "tc-001", "relatedId": "tc-002"},
+            {"uniqueId": "tc-002", "relatedId": "tc-003"},
+            {"uniqueId": "tc-003", "relatedId": "tc-001"},
+        ]
+        result = _filter_ambiguous_by_uid_coverage(["relatedId"], sample, id_field="uniqueId")
+        assert result == ["relatedId"]
+
+    def test_empty_proposed_fields(self):
+        from graph_pipeline.schema_discovery import _filter_ambiguous_by_uid_coverage
+
+        sample = [{"uniqueId": "tc-001", "name": "Test"}]
+        result = _filter_ambiguous_by_uid_coverage([], sample, id_field="uniqueId")
+        assert result == []
+
+    def test_threshold_boundary(self):
+        from graph_pipeline.schema_discovery import _filter_ambiguous_by_uid_coverage
+
+        # 4 records; field has 4 values: 2 match uniqueIds (50%) → kept at default 0.50
+        sample = [
+            {"uniqueId": "tc-001"},
+            {"uniqueId": "tc-002"},
+            {"uniqueId": "tc-003"},
+            {"uniqueId": "tc-004"},
+        ]
+        for r, val in zip(sample, ["tc-001", "tc-002", "label-A", "label-B"]):
+            r["ref"] = val
+
+        result = _filter_ambiguous_by_uid_coverage(["ref"], sample, id_field="uniqueId")
+        assert result == ["ref"]
+
+        # Drop one match so only 1 of 4 (25%) matches → dropped
+        sample[1]["ref"] = "label-C"
+        result = _filter_ambiguous_by_uid_coverage(["ref"], sample, id_field="uniqueId")
+        assert result == []
+
+    def test_sample_with_no_uid_field(self):
+        from graph_pipeline.schema_discovery import _filter_ambiguous_by_uid_coverage
+
+        sample = [{"name": "Alice"}, {"name": "Bob"}]
+        result = _filter_ambiguous_by_uid_coverage(["name"], sample, id_field="uniqueId")
+        assert result == ["name"]
+
+
 @pytest.mark.llm
 async def test_propose_dataset_context_returns_valid_result():
     """Call a real model and assert the result is a structurally valid DatasetContext."""
