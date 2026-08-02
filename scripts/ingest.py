@@ -208,7 +208,7 @@ async def main() -> None:
         print(f"\n      Edit {ctx_path} if needed, then press Enter to continue.")
         print("      (Ctrl+C to abort)")
         try:
-            input()
+            await anyio.to_thread.run_sync(input)
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
             sys.exit(0)
@@ -360,7 +360,8 @@ async def main() -> None:
                 print(f"    existing → {conflict.existing_canonical}   (from: {conflict.existing_dataset})")
                 print(f"    proposed → {conflict.proposed_canonical}   (from: {conflict.new_dataset})")
                 try:
-                    chosen = input("  Enter canonical name to use, or Ctrl+C to abort: ").strip()
+                    print("  Enter canonical name to use, or Ctrl+C to abort: ", end="", flush=True)
+                    chosen = (await anyio.to_thread.run_sync(input)).strip()
                 except (KeyboardInterrupt, EOFError):
                     print("\nAborted.")
                     sys.exit(0)

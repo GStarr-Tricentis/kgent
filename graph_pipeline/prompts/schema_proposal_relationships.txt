@@ -20,8 +20,14 @@ TASK — return a JSON object with two keys:
 2. "implicit_relationships": foreign key references embedded in record fields (e.g. a field ending in "UniqueId" or "Id" that points to another node).
    Example: {{"description": "test step references a module", "pattern": "step_uses_module", "edge_name": "moduleUniqueId", "maps_to": "USES_MODULE", "from_type": "TestStep", "to_type": "Module", "cross_dataset": false, "target_dataset_id": null}}
 
+3. "path_fk_relationships": fields (possibly inside nested arrays) whose values are path strings matching another record's nodePath, rather than a direct uniqueId. Use this when you see a field containing "/" -separated path strings that visibly match nodePath values of typed records in the sample.
+   * Set container_path to the dot-path of the array to iterate, or null if the field is directly on the record.
+   * target_field is almost always "nodePath".
+   Example: entries inside an ExecutionList have a "testCaseNodePath" field whose values match the nodePath of TestCase records.
+   {{"container_path": "details.entries", "fk_field": "testCaseNodePath", "target_field": "nodePath", "maps_to": "REFERENCES_TEST_CASE", "from_type": "ExecutionList", "to_type": "TestCase"}}
+
 Return ONLY this JSON object — no explanation, no markdown, no extra text.
-Always include all three keys: "relationship_types", "implicit_relationships", and "association_config".
+Always include all four keys: "relationship_types", "implicit_relationships", "association_config", and "path_fk_relationships".
 
 {{
   "relationship_types": [
@@ -36,10 +42,22 @@ Always include all three keys: "relationship_types", "implicit_relationships", a
     "partner_id_subfield": "<field within each edge object that holds the partner record's ID>",
     "direction_subfield": "<field encoding edge direction ('in'/'out'), or null if always outbound>",
     "direction_default": "out"
-  }}
+  }},
+  "path_fk_relationships": [
+    {{"container_path": "<dot-path to array, or null>",
+      "fk_field": "<field holding the path string>",
+      "target_field": "nodePath",
+      "maps_to": "<SCREAMING_SNAKE_CASE>",
+      "from_type": "<canonical label of source>",
+      "to_type": "<canonical label of target>"}}
+  ]
 }}
 
 Set association_config to null if no explicit edge array exists in the data.
+
+HIERARCHY PATH FIELD:
+{hierarchy_field_note}
+
 ---
 
 Rules:
@@ -47,3 +65,7 @@ Rules:
 - "from" and "to" must be canonical labels from NODE TYPES ALREADY DECIDED
 - If you see no associations and no FK fields, return empty arrays — do not invent relationships
 - Use SCREAMING_SNAKE_CASE for all maps_to values
+- Do NOT propose the hierarchy path field as an implicit FK — its values are tree-location strings (e.g. "/Root/Folder/Entity"), not record IDs referencing other nodes
+- Implicit FK edge_name values must be top-level record fields whose raw values directly match the id_field (typically uniqueId) of another record — fields ending in "UniqueId" or "Id" are the primary signal
+- Only propose a path_fk_relationship when the path string values in the sample visibly match the nodePath values of typed records — do not guess
+- Return path_fk_relationships: [] if no path-valued FK fields are found

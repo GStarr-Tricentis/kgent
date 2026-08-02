@@ -10,11 +10,18 @@ ALREADY-PROPOSED NODE TYPES:
 ALREADY-PROPOSED RELATIONSHIP TYPES:
 {proposed_relationship_types_json}
 
+ALREADY-HANDLED STRUCTURAL FIELDS (do not flag these as ambiguous):
+{handled_fields}
+
 DATASET STRUCTURE SUMMARY:
 {structure_summary}
 
-SAMPLE RECORDS:
-{sample_records_json}
+FIELD VALUE SAMPLES:
+{field_value_matrix_json}
+
+For each field, up to 25 distinct values from the dataset sample are shown.
+If a field's values are all human-readable display labels (natural language,
+spaces, varied phrasing) rather than compact identifiers, it is NOT ambiguous.
 
 TASK:
 Identify field names whose values could yield additional nodes or relationships if examined
@@ -34,3 +41,4 @@ Rules:
 - Do NOT include fields that are already clean foreign keys (ending in "Id", "UniqueId")
 - Do NOT include fields that are simple enums or booleans
 - Return {{"fields": []}} if no ambiguous fields exist
+- Do NOT include fields listed under ALREADY-HANDLED STRUCTURAL FIELDS — hierarchy path fields, nested collection fields, association array fields, and implicit FK edge name fields are fully processed by structural rules and must not be re-examined here

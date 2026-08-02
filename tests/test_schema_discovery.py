@@ -29,6 +29,28 @@ class MockBackend:
         )
 
 
+class CapturingBackend:
+    """Backend that records the initial prompt of each call and returns canned responses."""
+
+    def __init__(self, responses: list[str]):
+        self._responses = responses
+        self.prompts: list[str] = []
+        self._call_count = 0
+
+    async def complete(self, messages, tools, response_format=None):
+        from kgent.agent.types import ModelResponse
+        self.prompts.append(next(m["content"] for m in messages if m["role"] == "user"))
+        content = self._responses[self._call_count]
+        self._call_count += 1
+        return ModelResponse(
+            content=content,
+            tool_calls=[],
+            finish_reason="stop",
+            assistant_message={"role": "assistant", "content": content},
+            raw=None,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -148,6 +170,44 @@ class TestValidateProposedContext:
         result = validate_proposed_context(ctx, SAMPLE)
         assert isinstance(result, list)
         assert all(isinstance(w, str) for w in result)
+
+    def test_warns_on_unmapped_association_edge_name(self):
+        from graph_pipeline.context_store import (
+            AssociationConfig,
+            DatasetContext,
+            DatasetNodeType,
+            DatasetRelationshipType,
+        )
+        from graph_pipeline.schema_discovery import validate_proposed_context
+
+        ctx = DatasetContext(
+            dataset_id="test",
+            node_types=[DatasetNodeType(name="TestCase", maps_to="TestCase", identity_key="uniqueId")],
+            relationship_types=[
+                DatasetRelationshipType(name="Coverage", maps_to="COVERS", **{"from": "TestCase", "to": "TestCase"})
+            ],
+            association_config=AssociationConfig(
+                array_field="associations",
+                edge_name_subfield="edgeName",
+                partner_id_subfield="partnerId",
+                direction_default="out",
+            ),
+        )
+        sample = [
+            {
+                "uniqueId": "tc-001",
+                "typeName": "TestCase",
+                "associations": [
+                    {"edgeName": "Coverage", "partnerId": "tc-002"},
+                    {"edgeName": "TestCase", "partnerId": "tc-003"},
+                ],
+            }
+        ]
+
+        warnings = validate_proposed_context(ctx, sample)
+        assert len(warnings) == 1
+        assert "TestCase" in warnings[0]
+        assert all("Coverage" not in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +329,147 @@ class TestProposeDatasetContext:
         )
         assert len(result.relationship_types) == 1
         assert result.relationship_types[0].maps_to == "COVERS"
+
+    async def test_handled_fields_excludes_structural_fields(self):
+        from graph_pipeline.context_store import SharedContext
+        from graph_pipeline.schema_discovery import propose_dataset_context
+
+        nodes_resp = json.dumps({
+            "node_types": [{"name": "TestCase", "maps_to": "TestCase", "identity_key": "uniqueId"}],
+            "id_field": "uniqueId",
+            "type_field": "typeName",
+            "hierarchy_config": {
+                "field": "nodePath",
+                "separator": "/",
+                "phantom_label": "Folder",
+                "edge_type": "CONTAINS",
+            },
+            "nested_collections": [
+                {"field": "details.attrs", "child_label": "Attr", "edge_type": "HAS_ATTR", "id_field": "uniqueId"}
+            ],
+        })
+        rels_resp = json.dumps({
+            "relationship_types": [],
+            "implicit_relationships": [
+                {
+                    "description": "x",
+                    "pattern": "p",
+                    "edge_name": "moduleUniqueId",
+                    "maps_to": "USES_MODULE",
+                    "from_type": "TestCase",
+                    "to_type": "XModule",
+                    "cross_dataset": False,
+                    "target_dataset_id": None,
+                }
+            ],
+            "association_config": {
+                "array_field": "associations",
+                "edge_name_subfield": "edgeName",
+                "partner_id_subfield": "partnerId",
+                "direction_subfield": None,
+                "direction_default": "out",
+            },
+        })
+        ambiguous_resp = json.dumps({"fields": []})
+
+        backend = CapturingBackend([nodes_resp, rels_resp, ambiguous_resp])
+        await propose_dataset_context(
+            sample=SAMPLE,
+            shared_context=SharedContext(),
+            backend=backend,
+        )
+
+        ambiguous_prompt = backend.prompts[2]
+        assert "nodePath" in ambiguous_prompt
+        assert "details" in ambiguous_prompt
+        assert "details.attrs" not in ambiguous_prompt
+        assert "associations" in ambiguous_prompt
+        assert "moduleUniqueId" in ambiguous_prompt
+
+    async def test_hierarchy_field_note_in_relationships_prompt(self):
+        from graph_pipeline.context_store import SharedContext
+        from graph_pipeline.schema_discovery import propose_dataset_context
+
+        minimal_rels = json.dumps({
+            "relationship_types": [],
+            "implicit_relationships": [],
+            "association_config": None,
+        })
+        minimal_ambiguous = json.dumps({"fields": []})
+
+        def _nodes_resp(with_hierarchy: bool) -> str:
+            return json.dumps({
+                "node_types": [{"name": "TestCase", "maps_to": "TestCase", "identity_key": "uniqueId"}],
+                "id_field": "uniqueId",
+                "type_field": "typeName",
+                "hierarchy_config": (
+                    {"field": "nodePath", "separator": "/", "phantom_label": "Folder", "edge_type": "CONTAINS"}
+                    if with_hierarchy else None
+                ),
+                "nested_collections": [],
+            })
+
+        backend = CapturingBackend([_nodes_resp(True), minimal_rels, minimal_ambiguous])
+        await propose_dataset_context(sample=SAMPLE, shared_context=SharedContext(), backend=backend)
+        rels_prompt = backend.prompts[1]
+        assert '"nodePath"' in rels_prompt
+        assert "not record IDs" in rels_prompt
+
+        backend2 = CapturingBackend([_nodes_resp(False), minimal_rels, minimal_ambiguous])
+        await propose_dataset_context(sample=SAMPLE, shared_context=SharedContext(), backend=backend2)
+        rels_prompt2 = backend2.prompts[1]
+        assert "none identified" in rels_prompt2
+
+
+# ---------------------------------------------------------------------------
+# TestBuildFieldValueMatrix
+# ---------------------------------------------------------------------------
+
+class TestBuildFieldValueMatrix:
+    def test_excludes_handled_fields(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"name": "Alice", "status": "active"}]
+        result = _build_field_value_matrix(sample, handled_fields=["status"], id_field="id", type_field="type")
+        assert "status" not in result
+        assert "name" in result
+
+    def test_excludes_id_and_type_fields(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"uniqueId": "u1", "typeName": "Foo", "label": "bar"}]
+        result = _build_field_value_matrix(sample, handled_fields=[], id_field="uniqueId", type_field="typeName")
+        assert "uniqueId" not in result
+        assert "typeName" not in result
+        assert "label" in result
+
+    def test_excludes_nested_and_none(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"nested": {"a": 1}, "arr": [1, 2], "empty": None, "ok": "yes"}]
+        result = _build_field_value_matrix(sample, handled_fields=[], id_field="id", type_field="type")
+        assert "nested" not in result
+        assert "arr" not in result
+        assert "empty" not in result
+        assert "ok" in result
+
+    def test_excludes_id_suffix_fields(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"moduleId": "m1", "parentUniqueId": "p1", "title": "hello"}]
+        result = _build_field_value_matrix(sample, handled_fields=[], id_field="id", type_field="type")
+        assert "moduleId" not in result
+        assert "parentUniqueId" not in result
+        assert "title" in result
+
+    def test_caps_at_n_values(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"tag": str(i)} for i in range(30)]
+        result = _build_field_value_matrix(sample, handled_fields=[], id_field="id", type_field="type", n_values=25)
+        assert len(result["tag"]) == 25
+
+    def test_deduplicates_values(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"status": "open"}, {"status": "open"}, {"status": "closed"}]
+        result = _build_field_value_matrix(sample, handled_fields=[], id_field="id", type_field="type")
+        assert result["status"] == ["closed", "open"] or set(result["status"]) == {"open", "closed"}
+        assert len(result["status"]) == 2
 
 
 @pytest.mark.llm

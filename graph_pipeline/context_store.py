@@ -80,6 +80,15 @@ class ImplicitRelationship(BaseModel):
     target_dataset_id: str | None = None
 
 
+class PathFKRelationship(BaseModel):
+    container_path: str | None = None
+    fk_field: str
+    target_field: str = "nodePath"
+    maps_to: str
+    from_type: str = ""
+    to_type: str = ""
+
+
 class DesignDecision(BaseModel):
     question: str
     decision: str
@@ -117,11 +126,13 @@ class DatasetContext(BaseModel):
     node_types: list[DatasetNodeType] = Field(default_factory=list)
     relationship_types: list[DatasetRelationshipType] = Field(default_factory=list)
     implicit_relationships: list[ImplicitRelationship] = Field(default_factory=list)
+    path_fk_relationships: list[PathFKRelationship] = Field(default_factory=list)
     nested_collections: list[NestedCollection] = Field(default_factory=list)
     association_config: AssociationConfig | None = None
     hierarchy_config: HierarchyConfig | None = None
     design_decisions: list[DesignDecision] = Field(default_factory=list)
     ambiguous_fields: list[str] = Field(default_factory=list)
+    property_paths: list[str] = Field(default_factory=list)
     source_fingerprint: str = ""
     schema_version: int = 0
 

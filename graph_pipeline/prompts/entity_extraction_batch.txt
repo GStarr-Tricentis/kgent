@@ -4,6 +4,12 @@ DATASET ID: {dataset_id}
 RECORD IDENTITY FIELD: {id_field}
 AMBIGUOUS FIELDS: {ambiguous_fields}
 
+KNOWN NODE LABELS (you may only produce nodes with these labels):
+{known_node_labels_json}
+
+KNOWN RELATIONSHIP TYPES (you may only produce relationships with these types):
+{known_rel_types_json}
+
 RECORDS:
 {records_json}
 
@@ -43,3 +49,6 @@ Return ONLY valid JSON — no markdown, no explanation — a JSON array with one
 ]
 
 Return an entry for every input record. For records with nothing to extract, use empty arrays.
+- Only produce nodes whose "label" is one of the KNOWN NODE LABELS above
+- Only produce relationships whose "type" is one of the KNOWN RELATIONSHIP TYPES above
+- If the ambiguous field value does not map to a known type, return empty arrays for that record

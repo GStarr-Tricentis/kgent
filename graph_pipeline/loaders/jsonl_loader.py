@@ -9,7 +9,7 @@ class JsonlLoader(DataLoader):
 
     def load(self, path: str) -> list[dict]:
         records = []
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if not line:

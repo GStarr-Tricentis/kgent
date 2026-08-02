@@ -16,6 +16,7 @@ from graph_pipeline.context_store import (
     HierarchyConfig,
     ImplicitRelationship,
     NestedCollection,
+    PathFKRelationship,
     SharedContext,
 )
 from graph_pipeline.sampler import _detect_type_field, summarize_structure
@@ -32,6 +33,40 @@ _REL_TYPES_FORMAT = json.loads((_SCHEMAS_DIR / "relationship_types.json").read_t
 _AMBIGUOUS_FORMAT = json.loads((_SCHEMAS_DIR / "ambiguous_fields.json").read_text())
 
 _SHARED_CONTEXT_CHAR_BUDGET = 6_000 * 4  # ~6K tokens before switching to condensed form
+
+
+def _richness(r: dict) -> int:
+    score = len(r)
+    for v in r.values():
+        if isinstance(v, dict):
+            score += len(v)
+        elif isinstance(v, list) and v and isinstance(v[0], dict):
+            score += len(v) * 2
+    return score
+
+
+def _build_field_value_matrix(
+    sample: list[dict],
+    handled_fields: list[str],
+    id_field: str,
+    type_field: str,
+    n_values: int = 25,
+) -> dict[str, list[str]]:
+    excluded = set(handled_fields) | {id_field, type_field}
+    field_values: dict[str, list[str]] = {}
+    for record in sample:
+        for key, value in record.items():
+            if key in excluded:
+                continue
+            if key.endswith("Id") or key.endswith("UniqueId"):
+                continue
+            if isinstance(value, (dict, list)) or value is None:
+                continue
+            field_values.setdefault(key, [])
+            sv = str(value)
+            if sv and sv not in field_values[key]:
+                field_values[key].append(sv)
+    return {k: v[:n_values] for k, v in sorted(field_values.items()) if v}
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +182,13 @@ async def _propose_node_types(
         by_type: dict[str, list[dict]] = {}
         for r in sample:
             by_type.setdefault(r.get(type_field, "__untyped__"), []).append(r)
-        node_sample = [r for recs in by_type.values() for r in recs[:2]]
+        node_sample = [
+            r
+            for recs in by_type.values()
+            for r in sorted(recs, key=_richness, reverse=True)[:5]
+        ]
     else:
-        node_sample = sample[:10]
+        node_sample = sorted(sample, key=_richness, reverse=True)[:10]
 
     prompt = template.format(
         shared_context_yaml=_serialize_shared_context(shared_context),
@@ -197,30 +236,37 @@ async def _propose_relationship_types(
     node_types: list[DatasetNodeType],
     backend: ModelBackend,
     max_retries: int,
-) -> tuple[list[DatasetRelationshipType], list[ImplicitRelationship], dict]:
+    hierarchy_field: str | None = None,
+) -> tuple[list[DatasetRelationshipType], list[ImplicitRelationship], list[PathFKRelationship], dict]:
     template = _RELS_PROMPT_PATH.read_text(encoding="utf-8")
     node_types_json = json.dumps(
         [{"name": nt.name, "maps_to": nt.maps_to} for nt in node_types],
         indent=2,
     )
-    # Pick the 10 most structurally rich records — most keys + nested objects/arrays.
-    # Richer records are more likely to expose FK fields, nested references, or association arrays
-    # regardless of what the data format looks like.
-    def _richness(r: dict) -> int:
-        score = len(r)
-        for v in r.values():
-            if isinstance(v, dict):
-                score += len(v)
-            elif isinstance(v, list) and v and isinstance(v[0], dict):
-                score += len(v) * 2
-        return score
+    # Budget ~500k tokens for records (safe for 1M-context models).
+    # Trim richness-sorted records until the serialised size fits.
+    _REL_SAMPLE_MAX_CHARS = 2_000_000
+    rel_sample: list[dict] = []
+    _total_chars = 0
+    for _r in sorted(sample, key=_richness, reverse=True):
+        _r_chars = len(json.dumps(_r, ensure_ascii=False))
+        if _total_chars + _r_chars > _REL_SAMPLE_MAX_CHARS:
+            break
+        rel_sample.append(_r)
+        _total_chars += _r_chars
+    logger.info("rel_types sample: %d records / ~%d chars", len(rel_sample), _total_chars)
 
-    rel_sample = sorted(sample, key=_richness, reverse=True)[:50]
-
+    hierarchy_field_note = (
+        f'"{hierarchy_field}" — values are structural path strings '
+        f'(e.g. "/Root/Folder/Entity"), not record IDs'
+        if hierarchy_field
+        else "(none identified for this dataset)"
+    )
     prompt = template.format(
         node_types_json=node_types_json,
         structure_summary=summarize_structure(sample),
         sample_records_json=json.dumps(rel_sample, indent=2, ensure_ascii=False),
+        hierarchy_field_note=hierarchy_field_note,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -247,11 +293,15 @@ async def _propose_relationship_types(
             ]
             assoc_raw = data.get("association_config")
             assoc_config: dict = assoc_raw if isinstance(assoc_raw, dict) else {}
+            path_fk_rels = [
+                PathFKRelationship(**item)
+                for item in data.get("path_fk_relationships", [])
+            ]
             logger.info(
-                "rel_types succeeded on attempt %d: %d rel types, %d implicit",
-                attempt, len(rel_types), len(implicit_rels),
+                "rel_types succeeded on attempt %d: %d rel types, %d implicit, %d path_fk",
+                attempt, len(rel_types), len(implicit_rels), len(path_fk_rels),
             )
-            return rel_types, implicit_rels, assoc_config
+            return rel_types, implicit_rels, path_fk_rels, assoc_config
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
             logger.warning("rel_types attempt %d failed: %s", attempt, exc)
             last_error = exc
@@ -275,6 +325,9 @@ async def _propose_ambiguous_fields(
     max_retries: int,
     node_types: list[DatasetNodeType] | None = None,
     relationship_types: list[DatasetRelationshipType] | None = None,
+    handled_fields: list[str] | None = None,
+    id_field: str = "uniqueId",
+    type_field: str = "typeName",
 ) -> list[str]:
     """Return field names whose values may contain implicit entity/relationship references."""
     template = _AMBIGUOUS_PROMPT_PATH.read_text(encoding="utf-8")
@@ -286,11 +339,21 @@ async def _propose_ambiguous_fields(
         [{"name": rt.name, "maps_to": rt.maps_to} for rt in (relationship_types or [])],
         ensure_ascii=False,
     )
+    handled_fields_str = (
+        ", ".join(sorted(set(handled_fields))) if handled_fields else "(none)"
+    )
+    matrix = _build_field_value_matrix(
+        sample,
+        handled_fields=handled_fields or [],
+        id_field=id_field,
+        type_field=type_field,
+    )
     prompt = template.format(
         proposed_node_types_json=proposed_node_types_json,
         proposed_relationship_types_json=proposed_relationship_types_json,
         structure_summary=summarize_structure(sample),
-        sample_records_json=json.dumps(sample[:10], indent=2, ensure_ascii=False),
+        field_value_matrix_json=json.dumps(matrix, indent=2, ensure_ascii=False),
+        handled_fields=handled_fields_str,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -347,13 +410,40 @@ async def propose_dataset_context(
     node_types, structural_config = await _propose_node_types(
         sample, shared_context, backend, max_retries, type_field=type_field
     )
-    rel_types, implicit_rels, assoc_config_dict = await _propose_relationship_types(
-        sample, node_types, backend, max_retries
+
+    hierarchy_field: str | None = None
+    hc_raw = structural_config.get("hierarchy_config")
+    if isinstance(hc_raw, dict):
+        hierarchy_field = hc_raw.get("field") or None
+
+    rel_types, implicit_rels, path_fk_rels, assoc_config_dict = await _propose_relationship_types(
+        sample, node_types, backend, max_retries, hierarchy_field=hierarchy_field
     )
+
+    handled_fields: list[str] = []
+    if hierarchy_field:
+        handled_fields.append(hierarchy_field)
+    for nc in structural_config.get("nested_collections", []):
+        if isinstance(nc, dict):
+            field_path = nc.get("field", "")
+            if field_path:
+                handled_fields.append(field_path.split(".")[0])
+    if assoc_config_dict.get("array_field"):
+        handled_fields.append(assoc_config_dict["array_field"])
+    for ir in implicit_rels:
+        if ir.edge_name:
+            handled_fields.append(ir.edge_name)
+    for pfk in path_fk_rels:
+        if pfk.fk_field:
+            handled_fields.append(pfk.fk_field)
+
     ambiguous_fields = await _propose_ambiguous_fields(
         sample, backend, max_retries,
         node_types=node_types,
         relationship_types=rel_types,
+        handled_fields=handled_fields,
+        id_field=structural_config.get("id_field") or "uniqueId",
+        type_field=structural_config.get("type_field") or "typeName",
     )
 
     # hierarchy_config
@@ -382,6 +472,11 @@ async def propose_dataset_context(
         except Exception as exc:
             logger.warning("Could not parse association_config: %s", exc)
 
+    property_paths: list[str] = [
+        p for p in structural_config.get("property_paths", [])
+        if isinstance(p, str)
+    ]
+
     return DatasetContext(
         dataset_id=dataset_id,
         source_file="",
@@ -391,10 +486,12 @@ async def propose_dataset_context(
         node_types=node_types,
         relationship_types=rel_types,
         implicit_relationships=implicit_rels,
+        path_fk_relationships=path_fk_rels,
         nested_collections=nested_collections,
         association_config=association_config,
         hierarchy_config=hierarchy_config,
         ambiguous_fields=ambiguous_fields,
+        property_paths=property_paths,
     )
 
 
@@ -435,5 +532,23 @@ def validate_proposed_context(
             warnings.append(
                 f"Type '{value}' found in sample but has no mapping in proposed node_types"
             )
+
+    if ctx.association_config is not None:
+        array_field = ctx.association_config.array_field
+        edge_name_subfield = ctx.association_config.edge_name_subfield
+        mapped_rel_names = {rt.name for rt in ctx.relationship_types}
+        seen_edge_names: set[str] = set()
+        for record in sample:
+            for assoc in record.get(array_field, []):
+                if isinstance(assoc, dict):
+                    edge_name = assoc.get(edge_name_subfield)
+                    if edge_name and isinstance(edge_name, str):
+                        seen_edge_names.add(edge_name)
+        for edge_name in sorted(seen_edge_names):
+            if edge_name not in mapped_rel_names:
+                warnings.append(
+                    f"Association edgeName '{edge_name}' found in sample "
+                    f"but has no mapping in relationship_types"
+                )
 
     return warnings

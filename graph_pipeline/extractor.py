@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from kgent.agent.types import ModelBackend
-from graph_pipeline.context_store import DatasetContext, HierarchyConfig, SharedContext
+from graph_pipeline.context_store import DatasetContext, HierarchyConfig, PathFKRelationship, SharedContext
 from graph_pipeline.models import ExtractionSource, Node, Relationship
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,29 @@ def _scalar_properties(record: dict) -> dict:
         for k, v in record.items()
         if not isinstance(v, (dict, list))
     }
+
+
+def _resolve_property_paths(record: dict, paths: list[str]) -> dict:
+    """Resolve dot-path entries and return merged scalar properties.
+    For each path:
+    - If the resolved value is a dict, merge its scalar key-value pairs.
+    - If the resolved value is a scalar (not dict/list), add it under the
+      last path segment as key.
+    Callers should apply top-level scalars after this result so that
+    top-level values win on collision.
+    """
+    extra: dict = {}
+    for path in paths:
+        value = _get_nested(record, path)
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if not isinstance(v, (dict, list)):
+                    extra[k] = v
+        elif not isinstance(value, list):
+            extra[path.split(".")[-1]] = value
+    return extra
 
 
 def _node_type_map(dataset_ctx: DatasetContext) -> dict[str, str]:
@@ -147,6 +170,20 @@ async def _llm_extract_batch(
     id_field = dataset_ctx.id_field
     ambiguous = dataset_ctx.ambiguous_fields
 
+    allowed_node_labels = {nt.maps_to for nt in dataset_ctx.node_types}
+    for nc in dataset_ctx.nested_collections:
+        allowed_node_labels.add(nc.child_label)
+
+    allowed_rel_types = {rt.maps_to for rt in dataset_ctx.relationship_types}
+    for ir in dataset_ctx.implicit_relationships:
+        allowed_rel_types.add(ir.maps_to)
+    for pfk in dataset_ctx.path_fk_relationships:
+        allowed_rel_types.add(pfk.maps_to)
+    for nc in dataset_ctx.nested_collections:
+        allowed_rel_types.add(nc.edge_type)
+    if dataset_ctx.hierarchy_config:
+        allowed_rel_types.add(dataset_ctx.hierarchy_config.edge_type)
+
     payload = [
         {
             "label": type_map.get(r.get(dataset_ctx.type_field, ""), r.get(dataset_ctx.type_field, "")),
@@ -158,6 +195,8 @@ async def _llm_extract_batch(
         dataset_id=dataset_id,
         id_field=id_field,
         ambiguous_fields=", ".join(ambiguous),
+        known_node_labels_json=json.dumps(sorted(allowed_node_labels), ensure_ascii=False),
+        known_rel_types_json=json.dumps(sorted(allowed_rel_types), ensure_ascii=False),
         records_json=json.dumps(payload, indent=2, ensure_ascii=False),
     )
 
@@ -212,6 +251,13 @@ async def _llm_extract_batch(
                 )
             except Exception as exc:
                 logger.warning("Skipping malformed relationship in batch result: %s", exc)
+
+    before_nodes, before_rels = len(nodes), len(rels)
+    nodes = [n for n in nodes if n.label in allowed_node_labels]
+    rels = [r for r in rels if r.type in allowed_rel_types]
+    dropped = (before_nodes - len(nodes)) + (before_rels - len(rels))
+    if dropped:
+        logger.debug("Rule 7: filtered %d items with unknown labels/types", dropped)
 
     return nodes, rels
 
@@ -269,6 +315,18 @@ async def extract_all(
     all_nodes: list[Node] = []
     all_rels: list[Relationship] = []
 
+    # Pre-build path lookup indices for Rule 6b.
+    # One index per distinct target_field used across path_fk_relationships.
+    _path_indices: dict[str, dict[str, str]] = {}
+    for pfk in dataset_ctx.path_fk_relationships:
+        tf = pfk.target_field
+        if tf not in _path_indices:
+            _path_indices[tf] = {
+                str(r[tf]): f"{dataset_id}:{r[id_field]}"
+                for r in records
+                if r.get(tf) is not None and r.get(id_field) is not None
+            }
+
     # ----- Rule 1: id_field + type_field → Node --------------------------------
     for record in records:
         uid = record.get(id_field)
@@ -280,7 +338,10 @@ async def extract_all(
             Node(
                 id=f"{dataset_id}:{uid}",
                 label=label,
-                properties=_scalar_properties(record),
+                properties={
+                    **_resolve_property_paths(record, dataset_ctx.property_paths),
+                    **_scalar_properties(record),
+                },
                 source_record_id=uid,
                 extraction_source=ExtractionSource.RULE_BASED,
             )
@@ -411,6 +472,61 @@ async def extract_all(
                     extraction_source=ExtractionSource.RULE_BASED,
                 )
             )
+
+    # ----- Rule 6b: path-valued FK relationships ----------------------------
+    for pfk in dataset_ctx.path_fk_relationships:
+        index = _path_indices.get(pfk.target_field, {})
+        for record in records:
+            this_uid = record.get(id_field)
+            this_type = record.get(type_field)
+            if not this_uid:
+                continue
+            this_label = type_map.get(this_type, this_type) if this_type else ""
+            from_id = f"{dataset_id}:{this_uid}"
+            if pfk.container_path is None:
+                fk_value = record.get(pfk.fk_field)
+                if not fk_value:
+                    continue
+                to_id = index.get(str(fk_value))
+                if not to_id:
+                    continue
+                all_rels.append(
+                    Relationship(
+                        from_id=from_id,
+                        to_id=to_id,
+                        from_label=pfk.from_type or this_label,
+                        to_label=pfk.to_type,
+                        type=pfk.maps_to,
+                        properties={},
+                        source_record_id=this_uid,
+                        extraction_source=ExtractionSource.RULE_BASED,
+                    )
+                )
+            else:
+                container = _get_nested(record, pfk.container_path)
+                if not isinstance(container, list):
+                    continue
+                for item in container:
+                    if not isinstance(item, dict):
+                        continue
+                    fk_value = item.get(pfk.fk_field)
+                    if not fk_value:
+                        continue
+                    to_id = index.get(str(fk_value))
+                    if not to_id:
+                        continue
+                    all_rels.append(
+                        Relationship(
+                            from_id=from_id,
+                            to_id=to_id,
+                            from_label=pfk.from_type or this_label,
+                            to_label=pfk.to_type,
+                            type=pfk.maps_to,
+                            properties={},
+                            source_record_id=this_uid,
+                            extraction_source=ExtractionSource.RULE_BASED,
+                        )
+                    )
 
     # ----- Rule 7: LLM-assisted extraction for ambiguous fields --------------
     if dataset_ctx.ambiguous_fields and backend is not None:
