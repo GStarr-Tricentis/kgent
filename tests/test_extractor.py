@@ -722,7 +722,10 @@ class TestRule7LlmExtraction:
             }
         ])
         ctx = make_dataset_ctx(
-            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+            node_types=[
+                {"name": "TestCase", "maps_to": "TestCase"},
+                {"name": "Category", "maps_to": "Category"},
+            ],
             ambiguous_fields=["category"],
             hierarchy_config=None,
             association_config=None,
@@ -762,6 +765,116 @@ class TestRule7LlmExtraction:
         nodes, _ = await extract_all(records, ctx, make_shared_ctx(), backend=None)
         inferred = [n for n in nodes if n.extraction_source == ExtractionSource.LLM_INFERRED]
         assert len(inferred) == 0
+
+    async def test_node_with_unknown_label_filtered(self):
+        """A node whose label is not in node_types is dropped; valid nodes pass through."""
+        import json
+        from graph_pipeline.extractor import extract_all
+        from graph_pipeline.models import ExtractionSource
+
+        llm_response = json.dumps([
+            {
+                "source_record_id": "tc-001",
+                "nodes": [
+                    {"id": "ds1:phantom-1", "label": "Phantom",
+                     "properties": {}, "source_record_id": "tc-001"},
+                    {"id": "ds1:cat-real", "label": "Category",
+                     "properties": {"name": "functional"}, "source_record_id": "tc-001"},
+                ],
+                "relationships": [],
+            }
+        ])
+        ctx = make_dataset_ctx(
+            node_types=[
+                {"name": "TestCase", "maps_to": "TestCase"},
+                {"name": "Category", "maps_to": "Category"},
+            ],
+            ambiguous_fields=["category"],
+            hierarchy_config=None,
+            association_config=None,
+        )
+        records = [{"uniqueId": "tc-001", "typeName": "TestCase", "category": "functional"}]
+        nodes, _ = await extract_all(records, ctx, make_shared_ctx(), backend=MockBackend(llm_response))
+        inferred = [n for n in nodes if n.extraction_source == ExtractionSource.LLM_INFERRED]
+        labels = {n.label for n in inferred}
+        assert "Phantom" not in labels
+        assert "Category" in labels
+
+    async def test_rel_with_unknown_type_filtered(self):
+        """A relationship whose type is not in relationship_types is dropped; valid rels pass through."""
+        import json
+        from graph_pipeline.extractor import extract_all
+        from graph_pipeline.models import ExtractionSource
+
+        llm_response = json.dumps([
+            {
+                "source_record_id": "tc-001",
+                "nodes": [],
+                "relationships": [
+                    {
+                        "from_id": "ds1:tc-001", "to_id": "ds1:cat-1",
+                        "from_label": "TestCase", "to_label": "Category",
+                        "type": "MADE_UP", "properties": {}, "source_record_id": "tc-001",
+                    },
+                    {
+                        "from_id": "ds1:tc-001", "to_id": "ds1:cat-1",
+                        "from_label": "TestCase", "to_label": "Category",
+                        "type": "HAS_CATEGORY", "properties": {}, "source_record_id": "tc-001",
+                    },
+                ],
+            }
+        ])
+        ctx = make_dataset_ctx(
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+            relationship_types=[{"name": "HAS_CATEGORY", "maps_to": "HAS_CATEGORY"}],
+            ambiguous_fields=["category"],
+            hierarchy_config=None,
+            association_config=None,
+        )
+        records = [{"uniqueId": "tc-001", "typeName": "TestCase", "category": "functional"}]
+        _, rels = await extract_all(records, ctx, make_shared_ctx(), backend=MockBackend(llm_response))
+        inferred = [r for r in rels if r.extraction_source == ExtractionSource.LLM_INFERRED]
+        types = {r.type for r in inferred}
+        assert "MADE_UP" not in types
+        assert "HAS_CATEGORY" in types
+
+    async def test_known_types_passed_to_prompt(self):
+        """known_node_labels_json and known_rel_types_json appear in the rendered prompt."""
+        import json
+        from graph_pipeline.extractor import _llm_extract_batch
+
+        class CapturingBackend:
+            def __init__(self):
+                self.last_prompt = ""
+            async def complete(self, messages, tools, response_format=None):
+                from kgent.agent.types import ModelResponse
+                self.last_prompt = messages[0]["content"]
+                return ModelResponse(
+                    content="[]", tool_calls=[], finish_reason="stop",
+                    assistant_message={"role": "assistant", "content": "[]"}, raw=None,
+                )
+
+        ctx = make_dataset_ctx(
+            node_types=[
+                {"name": "TestCase", "maps_to": "TestCase"},
+                {"name": "Category", "maps_to": "Category"},
+            ],
+            relationship_types=[{"name": "HAS_CATEGORY", "maps_to": "HAS_CATEGORY"}],
+            ambiguous_fields=["category"],
+            hierarchy_config=None,
+            association_config=None,
+        )
+        type_map = {"TestCase": "TestCase"}
+        backend = CapturingBackend()
+        records = [{"uniqueId": "tc-001", "typeName": "TestCase", "category": "functional"}]
+        await _llm_extract_batch(records, ctx, type_map, backend)
+        prompt = backend.last_prompt
+        assert "KNOWN NODE LABELS" in prompt
+        assert "KNOWN RELATIONSHIP TYPES" in prompt
+        node_labels = json.loads(prompt.split("KNOWN NODE LABELS")[1].split("\n")[1].strip().split("\n")[0])
+        assert isinstance(node_labels, list) and len(node_labels) > 0
+        rel_types = json.loads(prompt.split("KNOWN RELATIONSHIP TYPES")[1].split("\n")[1].strip().split("\n")[0])
+        assert isinstance(rel_types, list) and len(rel_types) > 0
 
 
 @pytest.mark.llm
@@ -987,7 +1100,11 @@ class TestLlmExtractBatch:
 
     def _ctx(self, ambiguous_fields=None):
         return make_dataset_ctx(
-            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+            node_types=[
+                {"name": "TestCase", "maps_to": "TestCase"},
+                {"name": "Category", "maps_to": "Category"},
+            ],
+            relationship_types=[{"name": "HAS_CATEGORY", "maps_to": "HAS_CATEGORY"}],
             ambiguous_fields=ambiguous_fields or ["category"],
             hierarchy_config=None,
             association_config=None,
@@ -1102,7 +1219,10 @@ class TestLlmExtractAmbiguous:
 
     def _ctx(self, ambiguous_fields=None):
         return make_dataset_ctx(
-            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+            node_types=[
+                {"name": "TestCase", "maps_to": "TestCase"},
+                {"name": "Category", "maps_to": "Category"},
+            ],
             ambiguous_fields=ambiguous_fields or ["category"],
             hierarchy_config=None,
             association_config=None,

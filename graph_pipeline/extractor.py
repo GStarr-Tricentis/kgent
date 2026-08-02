@@ -170,6 +170,20 @@ async def _llm_extract_batch(
     id_field = dataset_ctx.id_field
     ambiguous = dataset_ctx.ambiguous_fields
 
+    allowed_node_labels = {nt.maps_to for nt in dataset_ctx.node_types}
+    for nc in dataset_ctx.nested_collections:
+        allowed_node_labels.add(nc.child_label)
+
+    allowed_rel_types = {rt.maps_to for rt in dataset_ctx.relationship_types}
+    for ir in dataset_ctx.implicit_relationships:
+        allowed_rel_types.add(ir.maps_to)
+    for pfk in dataset_ctx.path_fk_relationships:
+        allowed_rel_types.add(pfk.maps_to)
+    for nc in dataset_ctx.nested_collections:
+        allowed_rel_types.add(nc.edge_type)
+    if dataset_ctx.hierarchy_config:
+        allowed_rel_types.add(dataset_ctx.hierarchy_config.edge_type)
+
     payload = [
         {
             "label": type_map.get(r.get(dataset_ctx.type_field, ""), r.get(dataset_ctx.type_field, "")),
@@ -181,6 +195,8 @@ async def _llm_extract_batch(
         dataset_id=dataset_id,
         id_field=id_field,
         ambiguous_fields=", ".join(ambiguous),
+        known_node_labels_json=json.dumps(sorted(allowed_node_labels), ensure_ascii=False),
+        known_rel_types_json=json.dumps(sorted(allowed_rel_types), ensure_ascii=False),
         records_json=json.dumps(payload, indent=2, ensure_ascii=False),
     )
 
@@ -235,6 +251,13 @@ async def _llm_extract_batch(
                 )
             except Exception as exc:
                 logger.warning("Skipping malformed relationship in batch result: %s", exc)
+
+    before_nodes, before_rels = len(nodes), len(rels)
+    nodes = [n for n in nodes if n.label in allowed_node_labels]
+    rels = [r for r in rels if r.type in allowed_rel_types]
+    dropped = (before_nodes - len(nodes)) + (before_rels - len(rels))
+    if dropped:
+        logger.debug("Rule 7: filtered %d items with unknown labels/types", dropped)
 
     return nodes, rels
 

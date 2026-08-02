@@ -421,6 +421,57 @@ class TestProposeDatasetContext:
         assert "none identified" in rels_prompt2
 
 
+# ---------------------------------------------------------------------------
+# TestBuildFieldValueMatrix
+# ---------------------------------------------------------------------------
+
+class TestBuildFieldValueMatrix:
+    def test_excludes_handled_fields(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"name": "Alice", "status": "active"}]
+        result = _build_field_value_matrix(sample, handled_fields=["status"], id_field="id", type_field="type")
+        assert "status" not in result
+        assert "name" in result
+
+    def test_excludes_id_and_type_fields(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"uniqueId": "u1", "typeName": "Foo", "label": "bar"}]
+        result = _build_field_value_matrix(sample, handled_fields=[], id_field="uniqueId", type_field="typeName")
+        assert "uniqueId" not in result
+        assert "typeName" not in result
+        assert "label" in result
+
+    def test_excludes_nested_and_none(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"nested": {"a": 1}, "arr": [1, 2], "empty": None, "ok": "yes"}]
+        result = _build_field_value_matrix(sample, handled_fields=[], id_field="id", type_field="type")
+        assert "nested" not in result
+        assert "arr" not in result
+        assert "empty" not in result
+        assert "ok" in result
+
+    def test_excludes_id_suffix_fields(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"moduleId": "m1", "parentUniqueId": "p1", "title": "hello"}]
+        result = _build_field_value_matrix(sample, handled_fields=[], id_field="id", type_field="type")
+        assert "moduleId" not in result
+        assert "parentUniqueId" not in result
+        assert "title" in result
+
+    def test_caps_at_n_values(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"tag": str(i)} for i in range(30)]
+        result = _build_field_value_matrix(sample, handled_fields=[], id_field="id", type_field="type", n_values=25)
+        assert len(result["tag"]) == 25
+
+    def test_deduplicates_values(self):
+        from graph_pipeline.schema_discovery import _build_field_value_matrix
+        sample = [{"status": "open"}, {"status": "open"}, {"status": "closed"}]
+        result = _build_field_value_matrix(sample, handled_fields=[], id_field="id", type_field="type")
+        assert result["status"] == ["closed", "open"] or set(result["status"]) == {"open", "closed"}
+        assert len(result["status"]) == 2
+
+
 @pytest.mark.llm
 async def test_propose_dataset_context_returns_valid_result():
     """Call a real model and assert the result is a structurally valid DatasetContext."""

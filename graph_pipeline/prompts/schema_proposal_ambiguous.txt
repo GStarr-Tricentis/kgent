@@ -16,8 +16,12 @@ ALREADY-HANDLED STRUCTURAL FIELDS (do not flag these as ambiguous):
 DATASET STRUCTURE SUMMARY:
 {structure_summary}
 
-SAMPLE RECORDS:
-{sample_records_json}
+FIELD VALUE SAMPLES:
+{field_value_matrix_json}
+
+For each field, up to 25 distinct values from the dataset sample are shown.
+If a field's values are all human-readable display labels (natural language,
+spaces, varied phrasing) rather than compact identifiers, it is NOT ambiguous.
 
 TASK:
 Identify field names whose values could yield additional nodes or relationships if examined

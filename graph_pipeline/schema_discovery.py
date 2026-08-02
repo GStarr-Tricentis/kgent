@@ -35,6 +35,40 @@ _AMBIGUOUS_FORMAT = json.loads((_SCHEMAS_DIR / "ambiguous_fields.json").read_tex
 _SHARED_CONTEXT_CHAR_BUDGET = 6_000 * 4  # ~6K tokens before switching to condensed form
 
 
+def _richness(r: dict) -> int:
+    score = len(r)
+    for v in r.values():
+        if isinstance(v, dict):
+            score += len(v)
+        elif isinstance(v, list) and v and isinstance(v[0], dict):
+            score += len(v) * 2
+    return score
+
+
+def _build_field_value_matrix(
+    sample: list[dict],
+    handled_fields: list[str],
+    id_field: str,
+    type_field: str,
+    n_values: int = 25,
+) -> dict[str, list[str]]:
+    excluded = set(handled_fields) | {id_field, type_field}
+    field_values: dict[str, list[str]] = {}
+    for record in sample:
+        for key, value in record.items():
+            if key in excluded:
+                continue
+            if key.endswith("Id") or key.endswith("UniqueId"):
+                continue
+            if isinstance(value, (dict, list)) or value is None:
+                continue
+            field_values.setdefault(key, [])
+            sv = str(value)
+            if sv and sv not in field_values[key]:
+                field_values[key].append(sv)
+    return {k: v[:n_values] for k, v in sorted(field_values.items()) if v}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -148,9 +182,13 @@ async def _propose_node_types(
         by_type: dict[str, list[dict]] = {}
         for r in sample:
             by_type.setdefault(r.get(type_field, "__untyped__"), []).append(r)
-        node_sample = [r for recs in by_type.values() for r in recs[:2]]
+        node_sample = [
+            r
+            for recs in by_type.values()
+            for r in sorted(recs, key=_richness, reverse=True)[:5]
+        ]
     else:
-        node_sample = sample[:10]
+        node_sample = sorted(sample, key=_richness, reverse=True)[:10]
 
     prompt = template.format(
         shared_context_yaml=_serialize_shared_context(shared_context),
@@ -205,19 +243,7 @@ async def _propose_relationship_types(
         [{"name": nt.name, "maps_to": nt.maps_to} for nt in node_types],
         indent=2,
     )
-    # Pick the 10 most structurally rich records — most keys + nested objects/arrays.
-    # Richer records are more likely to expose FK fields, nested references, or association arrays
-    # regardless of what the data format looks like.
-    def _richness(r: dict) -> int:
-        score = len(r)
-        for v in r.values():
-            if isinstance(v, dict):
-                score += len(v)
-            elif isinstance(v, list) and v and isinstance(v[0], dict):
-                score += len(v) * 2
-        return score
-
-    rel_sample = sorted(sample, key=_richness, reverse=True)[:50]
+    rel_sample = sorted(sample, key=_richness, reverse=True)
 
     hierarchy_field_note = (
         f'"{hierarchy_field}" — values are structural path strings '
@@ -289,6 +315,8 @@ async def _propose_ambiguous_fields(
     node_types: list[DatasetNodeType] | None = None,
     relationship_types: list[DatasetRelationshipType] | None = None,
     handled_fields: list[str] | None = None,
+    id_field: str = "uniqueId",
+    type_field: str = "typeName",
 ) -> list[str]:
     """Return field names whose values may contain implicit entity/relationship references."""
     template = _AMBIGUOUS_PROMPT_PATH.read_text(encoding="utf-8")
@@ -303,11 +331,17 @@ async def _propose_ambiguous_fields(
     handled_fields_str = (
         ", ".join(sorted(set(handled_fields))) if handled_fields else "(none)"
     )
+    matrix = _build_field_value_matrix(
+        sample,
+        handled_fields=handled_fields or [],
+        id_field=id_field,
+        type_field=type_field,
+    )
     prompt = template.format(
         proposed_node_types_json=proposed_node_types_json,
         proposed_relationship_types_json=proposed_relationship_types_json,
         structure_summary=summarize_structure(sample),
-        sample_records_json=json.dumps(sample[:10], indent=2, ensure_ascii=False),
+        field_value_matrix_json=json.dumps(matrix, indent=2, ensure_ascii=False),
         handled_fields=handled_fields_str,
     )
 
@@ -397,6 +431,8 @@ async def propose_dataset_context(
         node_types=node_types,
         relationship_types=rel_types,
         handled_fields=handled_fields,
+        id_field=structural_config.get("id_field") or "uniqueId",
+        type_field=structural_config.get("type_field") or "typeName",
     )
 
     # hierarchy_config
