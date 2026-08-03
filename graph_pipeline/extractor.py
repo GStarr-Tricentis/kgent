@@ -267,6 +267,7 @@ async def _llm_extract_ambiguous(
     type_map: dict[str, str],
     backend: ModelBackend,
     batch_size: int = 10,
+    max_concurrency: int = 20,
 ) -> tuple[list[Node], list[Relationship]]:
     """Send ambiguous records to the LLM in batches; run all batches concurrently."""
     ambiguous = dataset_ctx.ambiguous_fields
@@ -275,8 +276,14 @@ async def _llm_extract_ambiguous(
         return [], []
 
     batches = [eligible[i : i + batch_size] for i in range(0, len(eligible), batch_size)]
+    sem = asyncio.Semaphore(max_concurrency)
+
+    async def _guarded(batch):
+        async with sem:
+            return await _llm_extract_batch(batch, dataset_ctx, type_map, backend)
+
     results = await asyncio.gather(
-        *[_llm_extract_batch(b, dataset_ctx, type_map, backend) for b in batches],
+        *[_guarded(b) for b in batches],
         return_exceptions=True,
     )
 
