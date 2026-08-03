@@ -8,7 +8,7 @@ from kgent.agent.types import RegisteredTool, ToolCall, ToolSource
 from kgent.tools.registry import ToolRegistry
 
 
-def _tool(name: str, fn, timeout: float = 30.0) -> RegisteredTool:
+def _tool(name: str, fn, timeout: float = 30.0, close=None) -> RegisteredTool:
     return RegisteredTool(
         name=name,
         description="",
@@ -16,6 +16,7 @@ def _tool(name: str, fn, timeout: float = 30.0) -> RegisteredTool:
         callable=fn,
         source=ToolSource.STATIC,
         timeout_seconds=timeout,
+        close=close,
     )
 
 
@@ -143,3 +144,59 @@ async def test_context_manager_disconnects_adapters_on_exit():
 
     adapter1.shutdown.assert_awaited_once()
     adapter2.shutdown.assert_awaited_once()
+
+
+# --- close hook lifecycle ---
+
+async def test_sync_close_hook_called_on_exit():
+    closed = []
+    r = ToolRegistry()
+    r.register(_tool("t", lambda args: "ok", close=lambda: closed.append(1)))
+    async with r:
+        pass
+    assert closed == [1]
+
+
+async def test_async_close_hook_called_on_exit():
+    closed = []
+
+    async def _aclose():
+        closed.append(1)
+
+    r = ToolRegistry()
+    r.register(_tool("t", lambda args: "ok", close=_aclose))
+    async with r:
+        pass
+    assert closed == [1]
+
+
+async def test_close_hook_called_before_adapters():
+    from unittest.mock import AsyncMock
+    call_log = []
+
+    adapter = AsyncMock()
+    async def _adapter_shutdown():
+        call_log.append("adapter")
+    adapter.shutdown.side_effect = _adapter_shutdown
+
+    r = ToolRegistry()
+    r.register(_tool("t", lambda args: "ok", close=lambda: call_log.append("tool")))
+    r.register_adapter(adapter)
+    async with r:
+        pass
+    assert call_log == ["tool", "adapter"]
+
+
+async def test_close_hook_error_does_not_prevent_adapter_shutdown():
+    from unittest.mock import AsyncMock
+
+    def _bad_close():
+        raise RuntimeError("close failed")
+
+    r = ToolRegistry()
+    r.register(_tool("t", lambda args: "ok", close=_bad_close))
+    adapter = AsyncMock()
+    r.register_adapter(adapter)
+    async with r:
+        pass
+    adapter.shutdown.assert_awaited_once()

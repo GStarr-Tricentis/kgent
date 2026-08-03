@@ -80,6 +80,14 @@ class ToolRegistry:
         return self
 
     async def __aexit__(self, *exc_info):
+        for tool in self._tools.values():
+            if tool.close is not None:
+                try:
+                    result = tool.close()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    logger.debug("Tool '%s' close error: %s", tool.name, exc)
         for adapter in self._adapters:
             try:
                 await adapter.shutdown()
