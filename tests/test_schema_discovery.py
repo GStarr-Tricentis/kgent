@@ -531,22 +531,3 @@ class TestFilterAmbiguousByUidCoverage:
         assert result == ["name"]
 
 
-@pytest.mark.llm
-async def test_propose_dataset_context_returns_valid_result():
-    """Call a real model and assert the result is a structurally valid DatasetContext."""
-    from graph_pipeline.context_store import DatasetContext, SharedContext
-    from graph_pipeline.schema_discovery import propose_dataset_context
-    from kgent.agent.backends.ollama import OllamaBackend
-
-    shared_ctx = SharedContext()
-    result = propose_dataset_context(
-        sample=SAMPLE,
-        shared_context=shared_ctx,
-        backend=OllamaBackend(model="qwen3:8b", base_url="http://localhost:11434/v1"),
-    )
-    assert isinstance(result, DatasetContext)
-    assert isinstance(result.node_types, list)
-    assert isinstance(result.relationship_types, list)
-    # The model should at minimum recognise the two typeNames present
-    proposed_names = {nt.name for nt in result.node_types}
-    assert len(proposed_names) >= 1

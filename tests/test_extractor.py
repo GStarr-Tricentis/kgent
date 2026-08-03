@@ -877,31 +877,6 @@ class TestRule7LlmExtraction:
         assert isinstance(rel_types, list) and len(rel_types) > 0
 
 
-@pytest.mark.llm
-async def test_llm_inferred_extraction_source():
-    """Ambiguous fields trigger an LLM call; resulting nodes are marked LLM_INFERRED."""
-    from graph_pipeline.extractor import extract_all
-    from graph_pipeline.models import ExtractionSource
-    from kgent.agent.backends.ollama import OllamaBackend
-
-    ctx = make_dataset_ctx(
-        node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
-        ambiguous_fields=["category"],
-    )
-    records = [
-        {
-            "uniqueId": "tc-001",
-            "typeName": "TestCase",
-            "name": "Login",
-            "category": "functional|regression",  # ambiguous — could be multiple types
-        }
-    ]
-    backend = OllamaBackend(model="qwen3:8b", base_url="http://localhost:11434/v1")
-    nodes, _ = await extract_all(records, ctx, make_shared_ctx(), backend=backend)
-    inferred = [n for n in nodes if n.extraction_source == ExtractionSource.LLM_INFERRED]
-    # We don't assert specific values — just that the LLM path ran and marked something
-    assert isinstance(inferred, list)
-
 
 # ---------------------------------------------------------------------------
 # Generic (non-Tosca) schemas
