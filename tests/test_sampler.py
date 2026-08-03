@@ -309,3 +309,75 @@ class TestComputeRecordHashes:
         h1 = compute_record_hashes([r1], "uniqueId")["tc-001"]
         h2 = compute_record_hashes([r2], "uniqueId")["tc-001"]
         assert h1 == h2
+
+
+# ---------------------------------------------------------------------------
+# prescan
+# ---------------------------------------------------------------------------
+
+def _make_prescan_records(n=20, type_name="TestCase"):
+    """Synthetic records where every record has the same three keys."""
+    return [
+        {"uniqueId": f"r{i}", "typeName": type_name, "name": f"Record {i}"}
+        for i in range(n)
+    ]
+
+
+class TestPrescan:
+    def test_prescan_sample_size_respected(self):
+        from graph_pipeline.sampler import prescan
+        records = _make_prescan_records(n=100)
+        result = prescan(iter(records), id_field="uniqueId", stored_hashes={}, sample_size=10)
+        assert len(result.sample) <= 10
+        assert result.total_records == 100
+
+    def test_prescan_identifies_changed_records(self):
+        from graph_pipeline.sampler import compute_record_hashes, prescan
+        records = _make_prescan_records(n=5)
+        stored = compute_record_hashes(records, "uniqueId")
+
+        # Modify one record
+        changed = [dict(r) for r in records]
+        changed[2] = {**changed[2], "name": "CHANGED"}
+
+        result = prescan(iter(changed), id_field="uniqueId", stored_hashes=stored)
+        assert "r2" in result.ingest_ids
+        # Unchanged records should NOT be in ingest_ids
+        for i in [0, 1, 3, 4]:
+            assert f"r{i}" not in result.ingest_ids
+
+    def test_prescan_identifies_deleted_records(self):
+        from graph_pipeline.sampler import prescan
+        stored = {"old-id": "aabbccdd11223344"}
+        records = _make_prescan_records(n=3)  # none have id "old-id"
+        result = prescan(iter(records), id_field="uniqueId", stored_hashes=stored)
+        assert "old-id" in result.deleted_ids
+
+    def test_prescan_empty_iter(self):
+        from graph_pipeline.sampler import prescan
+        result = prescan(iter([]), id_field="uniqueId", stored_hashes={})
+        assert result.sample == []
+        assert result.total_records == 0
+        assert result.current_hashes == {}
+        assert result.ingest_ids == set()
+        assert result.deleted_ids == set()
+        assert result.type_field is None
+        assert isinstance(result.fingerprint, str)
+        assert len(result.fingerprint) == 16
+
+    def test_prescan_fingerprint_stable(self):
+        from graph_pipeline.sampler import prescan
+        # All records share the same three keys → key set in sample is always identical
+        records = _make_prescan_records(n=30)
+        fp1 = prescan(iter(records), id_field="uniqueId", stored_hashes={}).fingerprint
+        fp2 = prescan(iter(records), id_field="uniqueId", stored_hashes={}).fingerprint
+        assert fp1 == fp2
+        assert len(fp1) == 16
+
+    def test_prescan_fingerprint_changes_on_different_types(self):
+        from graph_pipeline.sampler import prescan
+        records_a = _make_prescan_records(n=10, type_name="TestCase")
+        records_b = _make_prescan_records(n=10, type_name="XModule")
+        fp_a = prescan(iter(records_a), id_field="uniqueId", stored_hashes={}).fingerprint
+        fp_b = prescan(iter(records_b), id_field="uniqueId", stored_hashes={}).fingerprint
+        assert fp_a != fp_b
