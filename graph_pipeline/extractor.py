@@ -94,6 +94,7 @@ def _build_hierarchy_structures(
     """
     phantom_nodes: dict[str, Node] = {}
     hierarchy_rels: list[Relationship] = []
+    explicit_nodes_by_id: dict[str, Node] = {n.id: n for n in explicit_nodes_by_name.values()}
 
     def _resolve_segment(segment: str, record: dict | None = None) -> tuple[str, str]:
         """Return (node_id, node_label) for a path segment."""
@@ -131,9 +132,7 @@ def _build_hierarchy_structures(
             parent_id, parent_label = _resolve_segment(parent_seg)
             if is_leaf:
                 child_id = f"{dataset_id}:{record.get(id_field, '')}"
-                leaf_explicit = next(
-                    (n for n in explicit_nodes_by_name.values() if n.id == child_id), None
-                )
+                leaf_explicit = explicit_nodes_by_id.get(child_id)
                 child_label = leaf_explicit.label if leaf_explicit else config.phantom_label
             else:
                 child_id, child_label = _resolve_segment(child_seg)
