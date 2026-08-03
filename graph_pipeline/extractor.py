@@ -94,6 +94,7 @@ def _build_hierarchy_structures(
     """
     phantom_nodes: dict[str, Node] = {}
     hierarchy_rels: list[Relationship] = []
+    explicit_nodes_by_id: dict[str, Node] = {n.id: n for n in explicit_nodes_by_name.values()}
 
     def _resolve_segment(segment: str, record: dict | None = None) -> tuple[str, str]:
         """Return (node_id, node_label) for a path segment."""
@@ -131,9 +132,7 @@ def _build_hierarchy_structures(
             parent_id, parent_label = _resolve_segment(parent_seg)
             if is_leaf:
                 child_id = f"{dataset_id}:{record.get(id_field, '')}"
-                leaf_explicit = next(
-                    (n for n in explicit_nodes_by_name.values() if n.id == child_id), None
-                )
+                leaf_explicit = explicit_nodes_by_id.get(child_id)
                 child_label = leaf_explicit.label if leaf_explicit else config.phantom_label
             else:
                 child_id, child_label = _resolve_segment(child_seg)
@@ -268,6 +267,7 @@ async def _llm_extract_ambiguous(
     type_map: dict[str, str],
     backend: ModelBackend,
     batch_size: int = 10,
+    max_concurrency: int = 20,
 ) -> tuple[list[Node], list[Relationship]]:
     """Send ambiguous records to the LLM in batches; run all batches concurrently."""
     ambiguous = dataset_ctx.ambiguous_fields
@@ -276,8 +276,14 @@ async def _llm_extract_ambiguous(
         return [], []
 
     batches = [eligible[i : i + batch_size] for i in range(0, len(eligible), batch_size)]
+    sem = asyncio.Semaphore(max_concurrency)
+
+    async def _guarded(batch):
+        async with sem:
+            return await _llm_extract_batch(batch, dataset_ctx, type_map, backend)
+
     results = await asyncio.gather(
-        *[_llm_extract_batch(b, dataset_ctx, type_map, backend) for b in batches],
+        *[_guarded(b) for b in batches],
         return_exceptions=True,
     )
 

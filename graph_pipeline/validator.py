@@ -59,53 +59,69 @@ async def check_referential_integrity(
     batch_ids: set[str] = {n.id for n in nodes}
     errors: list[ValidationError] = []
 
-    # Collect unique missing IDs across all relationships
-    missing_ids: dict[str, str] = {}  # id → source_record_id of first rel that referenced it
+    missing_ids: dict[str, str] = {}        # id → source_record_id
+    missing_id_labels: dict[str, str] = {}  # id → label for indexed lookup
+
     for rel in relationships:
-        for endpoint_id in (rel.from_id, rel.to_id):
+        for endpoint_id, label in (
+            (rel.from_id, rel.from_label),
+            (rel.to_id, rel.to_label),
+        ):
             if endpoint_id not in batch_ids and endpoint_id not in missing_ids:
                 missing_ids[endpoint_id] = rel.source_record_id
+                if label:
+                    missing_id_labels[endpoint_id] = label
 
     if not missing_ids:
         return []
 
     if driver is None:
-        # Dry-run: treat all missing as warnings
         for missing_id, record_id in missing_ids.items():
-            errors.append(
-                ValidationError(
-                    severity="warning",
-                    message=f"Endpoint '{missing_id}' not found in current batch (dry-run)",
-                    record_id=record_id,
-                    entity_id=missing_id,
-                )
-            )
+            errors.append(ValidationError(
+                severity="warning",
+                message=f"Endpoint '{missing_id}' not found in current batch (dry-run)",
+                record_id=record_id,
+                entity_id=missing_id,
+            ))
         return errors
 
-    # Live mode: check Neo4j for any missing IDs
+    by_label: dict[str, list[str]] = {}
+    unlabelled: list[str] = []
+    for mid in missing_ids:
+        label = missing_id_labels.get(mid)
+        if label:
+            by_label.setdefault(label, []).append(mid)
+        else:
+            unlabelled.append(mid)
+
     found_in_neo4j: set[str] = set()
     try:
         async with driver.session() as session:
-            result = await session.run(
-                "UNWIND $ids AS id MATCH (n {id: id}) RETURN n.id AS id",
-                ids=list(missing_ids.keys()),
-            )
-            for record in await result.data():
-                found_in_neo4j.add(record["id"])
+            for label, ids in by_label.items():
+                result = await session.run(
+                    f"UNWIND $ids AS id MATCH (n:{label} {{id: id}}) RETURN n.id AS id",
+                    ids=ids,
+                )
+                for record in await result.data():
+                    found_in_neo4j.add(record["id"])
+            if unlabelled:
+                result = await session.run(
+                    "UNWIND $ids AS id MATCH (n {id: id}) RETURN n.id AS id",
+                    ids=unlabelled,
+                )
+                for record in await result.data():
+                    found_in_neo4j.add(record["id"])
     except Exception as exc:
         logger.error("Neo4j lookup failed during referential integrity check: %s", exc)
 
     for missing_id, record_id in missing_ids.items():
         if missing_id not in found_in_neo4j:
-            errors.append(
-                ValidationError(
-                    severity="error",
-                    message=f"Endpoint '{missing_id}' not found in batch or in Neo4j",
-                    record_id=record_id,
-                    entity_id=missing_id,
-                )
-            )
-
+            errors.append(ValidationError(
+                severity="error",
+                message=f"Endpoint '{missing_id}' not found in batch or in Neo4j",
+                record_id=record_id,
+                entity_id=missing_id,
+            ))
     return errors
 
 

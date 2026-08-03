@@ -1303,6 +1303,38 @@ class TestLlmExtractAmbiguous:
         # Second batch succeeded and produced one node
         assert any(n.id == "ds1:cat-ok" for n in nodes)
 
+    async def test_max_concurrency_limits_simultaneous_calls(self):
+        """Never more than max_concurrency batches in flight at once."""
+        import asyncio
+        import json as _json
+        from graph_pipeline.extractor import _llm_extract_ambiguous
+
+        in_flight = {"current": 0, "peak": 0}
+
+        class TrackingBackend:
+            async def complete(self, messages, tools, response_format=None):
+                from kgent.agent.types import ModelResponse
+                in_flight["current"] += 1
+                in_flight["peak"] = max(in_flight["peak"], in_flight["current"])
+                await asyncio.sleep(0)
+                in_flight["current"] -= 1
+                content = _json.dumps([])
+                return ModelResponse(
+                    content=content, tool_calls=[], finish_reason="stop",
+                    assistant_message={"role": "assistant", "content": content},
+                    raw=None,
+                )
+
+        records = [
+            {"uniqueId": f"tc-{i:03d}", "typeName": "TestCase", "category": "x"}
+            for i in range(50)
+        ]
+        await _llm_extract_ambiguous(
+            records, self._ctx(), self._type_map(),
+            TrackingBackend(), batch_size=1, max_concurrency=5,
+        )
+        assert in_flight["peak"] <= 5
+
 
 # ---------------------------------------------------------------------------
 # property_paths — flat nested dict merging into node properties

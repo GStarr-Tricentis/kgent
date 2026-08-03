@@ -7,7 +7,9 @@ from graph_pipeline.cypher_generator import (
     generate_constraint_statements,
     generate_extraction_source_index_statements,
     generate_node_merge,
+    generate_node_merge_batch,
     generate_relationship_merge,
+    generate_relationship_merge_batch,
 )
 from graph_pipeline.models import Node, Relationship
 
@@ -71,7 +73,8 @@ async def _run_batch(
             total_created += counts.get(count_key_created, 0)
         await tx.commit()
 
-        total_matched = len(statements) - total_created
+        row_count = sum(len(params["rows"]) for _, params in statements)
+        total_matched = row_count - total_created
         setattr(result, count_key_created, getattr(result, count_key_created) + total_created)
         setattr(result, count_key_matched, getattr(result, count_key_matched) + max(0, total_matched))
         return True
@@ -118,20 +121,32 @@ async def write_nodes(
     if not nodes:
         return result
 
-    statements = [generate_node_merge(n) for n in nodes]
-    batches = [statements[i : i + batch_size] for i in range(0, len(statements), batch_size)]
+    by_label: dict[str, list[Node]] = {}
+    for node in nodes:
+        by_label.setdefault(node.label, []).append(node)
 
     async with driver.session() as session:
-        for batch_index, batch in enumerate(batches):
-            await _run_batch(
-                session,
-                batch,
-                batch_index,
-                result,
-                count_key_created="nodes_created",
-                count_key_matched="nodes_matched",
-            )
-
+        batch_index = 0
+        for label, label_nodes in by_label.items():
+            cypher = generate_node_merge_batch(label)
+            for i in range(0, len(label_nodes), batch_size):
+                chunk = label_nodes[i : i + batch_size]
+                params = {
+                    "rows": [
+                        {
+                            "id": n.id,
+                            "props": n.properties,
+                            "extraction_source": n.extraction_source.value,
+                        }
+                        for n in chunk
+                    ]
+                }
+                await _run_batch(
+                    session, [(cypher, params)], batch_index, result,
+                    count_key_created="nodes_created",
+                    count_key_matched="nodes_matched",
+                )
+                batch_index += 1
     return result
 
 
@@ -153,39 +168,71 @@ async def write_relationships(
             result.errors.append(msg)
         else:
             valid_rels.append(r)
-    rels = valid_rels
 
-    if not rels:
+    if not valid_rels:
         return result
 
-    statements = [generate_relationship_merge(r) for r in rels]
-    batches = [statements[i : i + batch_size] for i in range(0, len(statements), batch_size)]
+    by_triple: dict[tuple[str, str, str], list[Relationship]] = {}
+    for r in valid_rels:
+        by_triple.setdefault((r.from_label, r.to_label, r.type), []).append(r)
 
     async with driver.session() as session:
-        for batch_index, batch in enumerate(batches):
-            await _run_batch(
-                session,
-                batch,
-                batch_index,
-                result,
-                count_key_created="relationships_created",
-                count_key_matched="relationships_matched",
-            )
-
+        batch_index = 0
+        for (from_label, to_label, rel_type), triple_rels in by_triple.items():
+            cypher = generate_relationship_merge_batch(from_label, to_label, rel_type)
+            for i in range(0, len(triple_rels), batch_size):
+                chunk = triple_rels[i : i + batch_size]
+                params = {
+                    "rows": [
+                        {
+                            "from_id": r.from_id,
+                            "to_id": r.to_id,
+                            "extraction_source": r.extraction_source.value,
+                        }
+                        for r in chunk
+                    ]
+                }
+                await _run_batch(
+                    session, [(cypher, params)], batch_index, result,
+                    count_key_created="relationships_created",
+                    count_key_matched="relationships_matched",
+                )
+                batch_index += 1
     return result
 
 
-async def soft_delete_nodes(node_ids: list[str], driver, dataset_id: str) -> int:
-    """Set deleted_at = datetime() on nodes whose id is in node_ids. Returns matched count."""
+async def soft_delete_nodes(
+    node_ids: list[str],
+    driver,
+    labels: list[str] | None = None,
+) -> int:
+    """Set deleted_at = datetime() on nodes whose id is in node_ids.
+
+    Pass labels (the node labels in use for this dataset) to enable indexed
+    lookups. Without labels, falls back to a labelless scan — correct but slower.
+    """
     if not node_ids:
         return 0
+    total = 0
     async with driver.session() as session:
-        result = await session.run(
-            "UNWIND $ids AS id MATCH (n {id: id}) SET n.deleted_at = datetime() RETURN count(n) AS cnt",
-            ids=node_ids,
-        )
-        record = await result.single()
-        return record["cnt"] if record else 0
+        if labels:
+            for label in labels:
+                result = await session.run(
+                    f"UNWIND $ids AS id MATCH (n:{label} {{id: id}}) "
+                    f"SET n.deleted_at = datetime() RETURN count(n) AS cnt",
+                    ids=node_ids,
+                )
+                record = await result.single()
+                total += record["cnt"] if record else 0
+        else:
+            result = await session.run(
+                "UNWIND $ids AS id MATCH (n {id: id}) "
+                "SET n.deleted_at = datetime() RETURN count(n) AS cnt",
+                ids=node_ids,
+            )
+            record = await result.single()
+            total = record["cnt"] if record else 0
+    return total
 
 
 async def write_all(
