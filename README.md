@@ -286,3 +286,5 @@ AGENT_MODEL=llama3.1:8b pytest kgent/tests/integration/ -v -m integration
 - **No true network isolation on macOS** — the sandbox subprocess runs with the same network access as the parent. Blocking outbound connections requires a firewall rule or container.
 - **Shell tool has no safelist** — `shell` runs arbitrary commands as the current user. Intended for local/trusted use only.
 - **Generated tool code runs in sandbox** — only stdlib is available; third-party packages installed in the venv are not accessible from inside `python_exec`.
+- **Graph pipeline is Unix-only** — `context_store.py` uses `fcntl` for file locking, which is not available on Windows. `scripts/ingest.py` will not run on Windows.
+- **Phantom node ID collision in folder hierarchies** — `_build_hierarchy_structures` in `extractor.py` identifies phantom folder nodes by segment name alone. Two folders with the same name under different roots (e.g. `Root1/Setup` and `Root2/Setup`) will collide into a single Neo4j node. Fix tracked: use the full cumulative path as the node ID.
