@@ -47,6 +47,28 @@ def generate_relationship_merge(rel: Relationship) -> tuple[str, dict]:
     return cypher, params
 
 
+def generate_node_merge_batch(label: str) -> str:
+    """UNWIND template for a homogeneous batch of nodes with the same label."""
+    return (
+        f"UNWIND $rows AS row\n"
+        f"MERGE (n:{label} {{id: row.id}})\n"
+        f"SET n += row.props\n"
+        f"SET n.ingested_at = datetime()\n"
+        f"SET n.extraction_source = row.extraction_source"
+    )
+
+
+def generate_relationship_merge_batch(from_label: str, to_label: str, rel_type: str) -> str:
+    """UNWIND template for a homogeneous batch of relationships with the same type triple."""
+    return (
+        f"UNWIND $rows AS row\n"
+        f"MATCH (a:{from_label} {{id: row.from_id}})\n"
+        f"MATCH (b:{to_label} {{id: row.to_id}})\n"
+        f"MERGE (a)-[r:{rel_type}]->(b)\n"
+        f"SET r.extraction_source = row.extraction_source"
+    )
+
+
 def generate_constraint_statements(labels: list[str]) -> list[str]:
     """Return one CREATE CONSTRAINT statement per label, enforcing id uniqueness.
 

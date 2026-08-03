@@ -175,17 +175,38 @@ async def write_relationships(
     return result
 
 
-async def soft_delete_nodes(node_ids: list[str], driver, dataset_id: str) -> int:
-    """Set deleted_at = datetime() on nodes whose id is in node_ids. Returns matched count."""
+async def soft_delete_nodes(
+    node_ids: list[str],
+    driver,
+    labels: list[str] | None = None,
+) -> int:
+    """Set deleted_at = datetime() on nodes whose id is in node_ids.
+
+    Pass labels (the node labels in use for this dataset) to enable indexed
+    lookups. Without labels, falls back to a labelless scan — correct but slower.
+    """
     if not node_ids:
         return 0
+    total = 0
     async with driver.session() as session:
-        result = await session.run(
-            "UNWIND $ids AS id MATCH (n {id: id}) SET n.deleted_at = datetime() RETURN count(n) AS cnt",
-            ids=node_ids,
-        )
-        record = await result.single()
-        return record["cnt"] if record else 0
+        if labels:
+            for label in labels:
+                result = await session.run(
+                    f"UNWIND $ids AS id MATCH (n:{label} {{id: id}}) "
+                    f"SET n.deleted_at = datetime() RETURN count(n) AS cnt",
+                    ids=node_ids,
+                )
+                record = await result.single()
+                total += record["cnt"] if record else 0
+        else:
+            result = await session.run(
+                "UNWIND $ids AS id MATCH (n {id: id}) "
+                "SET n.deleted_at = datetime() RETURN count(n) AS cnt",
+                ids=node_ids,
+            )
+            record = await result.single()
+            total = record["cnt"] if record else 0
+    return total
 
 
 async def write_all(

@@ -333,7 +333,8 @@ async def main() -> None:
         if args.prune_deleted and deleted_ids:
             from graph_pipeline.neo4j_writer import soft_delete_nodes
             namespaced = [f"{dataset_id}:{rid}" for rid in deleted_ids]
-            soft_deleted_count = await soft_delete_nodes(namespaced, driver, dataset_id)
+            node_labels = [nt.maps_to for nt in dataset_ctx.node_types]
+            soft_deleted_count = await soft_delete_nodes(namespaced, driver, labels=node_labels)
             _indent(f"  {soft_deleted_count} node(s) soft-deleted (deleted_at set; not removed from graph)")
             _indent("  Query with: MATCH (n) WHERE n.deleted_at IS NOT NULL")
         await driver.close()

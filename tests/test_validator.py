@@ -163,6 +163,108 @@ class TestReferentialIntegrityWithDriver:
 
 
 # ---------------------------------------------------------------------------
+# check_referential_integrity — label-scoped query routing
+# ---------------------------------------------------------------------------
+
+async def test_labeled_endpoints_use_label_scoped_query():
+    from unittest.mock import AsyncMock, MagicMock
+    from graph_pipeline.validator import check_referential_integrity
+
+    nodes = []
+    rels = [make_rel("ds1:tc-001", "ds1:req-001")]
+
+    session = AsyncMock()
+    run_result = AsyncMock()
+    run_result.data = AsyncMock(return_value=[{"id": "ds1:tc-001"}, {"id": "ds1:req-001"}])
+    session.run = AsyncMock(return_value=run_result)
+    driver = MagicMock()
+    driver.session.return_value.__aenter__ = AsyncMock(return_value=session)
+    driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    errors = await check_referential_integrity(nodes, rels, driver)
+
+    assert errors == []
+    queries = [call.args[0] for call in session.run.call_args_list]
+    assert all("TestCase" in q or "Requirement" in q for q in queries)
+    assert not any(q.strip().startswith("UNWIND $ids AS id MATCH (n {") for q in queries)
+
+
+async def test_unlabelled_endpoints_use_fallback_query():
+    from unittest.mock import AsyncMock, MagicMock
+    from graph_pipeline.validator import check_referential_integrity
+
+    nodes = []
+    rels = [make_rel("ds1:tc-001", "ds1:req-001", from_label="", to_label="")]
+
+    session = AsyncMock()
+    run_result = AsyncMock()
+    run_result.data = AsyncMock(return_value=[])
+    session.run = AsyncMock(return_value=run_result)
+    driver = MagicMock()
+    driver.session.return_value.__aenter__ = AsyncMock(return_value=session)
+    driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    await check_referential_integrity(nodes, rels, driver)
+
+    queries = [call.args[0] for call in session.run.call_args_list]
+    assert any("MATCH (n {id: id})" in q for q in queries)
+
+
+async def test_mixed_labeled_and_unlabelled_endpoints():
+    from unittest.mock import AsyncMock, MagicMock
+    from graph_pipeline.validator import check_referential_integrity
+
+    nodes = []
+    rels = [
+        make_rel("ds1:tc-001", "ds1:req-001"),
+        make_rel("ds1:unknown-001", "ds1:unknown-002", from_label="", to_label=""),
+    ]
+
+    session = AsyncMock()
+    run_result = AsyncMock()
+    run_result.data = AsyncMock(return_value=[])
+    session.run = AsyncMock(return_value=run_result)
+    driver = MagicMock()
+    driver.session.return_value.__aenter__ = AsyncMock(return_value=session)
+    driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    await check_referential_integrity(nodes, rels, driver)
+
+    queries = [call.args[0] for call in session.run.call_args_list]
+    assert any("TestCase" in q or "Requirement" in q for q in queries)
+    assert any("MATCH (n {id: id})" in q for q in queries)
+
+
+async def test_neo4j_exception_caught_all_missing_returned_as_errors():
+    from unittest.mock import AsyncMock, MagicMock
+    from graph_pipeline.validator import check_referential_integrity
+
+    nodes = []
+    rels = [make_rel("ds1:tc-001", "ds1:req-001")]
+
+    session = AsyncMock()
+    session.run = AsyncMock(side_effect=Exception("Neo4j unavailable"))
+    driver = MagicMock()
+    driver.session.return_value.__aenter__ = AsyncMock(return_value=session)
+    driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    errors = await check_referential_integrity(nodes, rels, driver)
+
+    assert len(errors) == 2
+    assert all(e.severity == "error" for e in errors)
+
+
+async def test_endpoints_in_batch_produce_no_errors():
+    from graph_pipeline.validator import check_referential_integrity
+
+    nodes = [make_node("ds1:tc-001"), make_node("ds1:req-001", label="Requirement")]
+    rels = [make_rel("ds1:tc-001", "ds1:req-001")]
+
+    errors = await check_referential_integrity(nodes, rels, driver=None)
+    assert errors == []
+
+
+# ---------------------------------------------------------------------------
 # check_label_coverage
 # ---------------------------------------------------------------------------
 
