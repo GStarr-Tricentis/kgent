@@ -14,7 +14,3 @@ class RunState(BaseModel):
     last_batch: list | None = None
     finished: bool = False
     finish_reason: str = ""
-
-
-# Alias used by the phase 0/1 acceptance checklist
-AgentState = RunState
