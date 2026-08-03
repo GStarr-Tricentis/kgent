@@ -10,6 +10,7 @@ from typing import Iterator
 from kgent.agent.types import ModelBackend
 from graph_pipeline.context_store import DatasetContext, HierarchyConfig, PathFKRelationship, SharedContext
 from graph_pipeline.models import ExtractionSource, Node, Relationship
+from graph_pipeline.neo4j_writer import WriteBuffer, WriteResult
 
 logger = logging.getLogger(__name__)
 
@@ -600,3 +601,260 @@ def build_extraction_indices(
                 indices.path_value_index[target_field][str(val)] = namespaced_id
 
     return indices
+
+
+# ---------------------------------------------------------------------------
+# Pass 3: streaming extraction + write
+# ---------------------------------------------------------------------------
+
+@dataclass
+class StreamExtractResult:
+    write_result: WriteResult
+    # Deferred: (record_id, path_string, leaf_uid) — one per record with a path field
+    path_tasks: list[tuple[str, str, str]] = field(default_factory=list)
+    # Deferred: records containing ambiguous fields for LLM Rule 7
+    llm_buffer: list[dict] = field(default_factory=list)
+
+
+async def _emit_hierarchy_inline(
+    segments: list[str],
+    leaf_uid: str,
+    dataset_id: str,
+    config: HierarchyConfig,
+    name_to_node: dict[str, tuple[str, str]],
+    buffer: WriteBuffer,
+    phantom_nodes_seen: dict[str, bool],
+) -> None:
+    """Emit hierarchy nodes and edges inline during the streaming pass."""
+    for i in range(len(segments) - 1):
+        parent_seg = segments[i]
+        child_seg = segments[i + 1]
+        is_leaf = (i + 1 == len(segments) - 1)
+
+        # Resolve parent
+        if parent_seg in name_to_node:
+            parent_id, parent_label = name_to_node[parent_seg]
+        else:
+            parent_id = f"{dataset_id}:path:{parent_seg}"
+            parent_label = config.phantom_label
+            if parent_id not in phantom_nodes_seen:
+                phantom_nodes_seen[parent_id] = True
+                await buffer.add_node(Node(
+                    id=parent_id, label=config.phantom_label,
+                    properties={"name": parent_seg}, source_record_id="",
+                    extraction_source=ExtractionSource.PHANTOM,
+                ))
+
+        # Resolve child
+        if is_leaf:
+            child_id = f"{dataset_id}:{leaf_uid}"
+            child_label = next(
+                (lbl for (nid, lbl) in name_to_node.values() if nid == child_id),
+                config.phantom_label,
+            )
+        elif child_seg in name_to_node:
+            child_id, child_label = name_to_node[child_seg]
+        else:
+            child_id = f"{dataset_id}:path:{child_seg}"
+            child_label = config.phantom_label
+            if child_id not in phantom_nodes_seen:
+                phantom_nodes_seen[child_id] = True
+                await buffer.add_node(Node(
+                    id=child_id, label=config.phantom_label,
+                    properties={"name": child_seg}, source_record_id="",
+                    extraction_source=ExtractionSource.PHANTOM,
+                ))
+
+        await buffer.add_rel(Relationship(
+            from_id=parent_id, to_id=child_id,
+            from_label=parent_label, to_label=child_label,
+            type=config.edge_type, properties={},
+            source_record_id=leaf_uid,
+            extraction_source=ExtractionSource.RULE_BASED,
+        ))
+
+
+async def extract_and_write_stream(
+    records_iter: Iterator[dict],
+    dataset_ctx: DatasetContext,
+    shared_ctx: SharedContext | None,
+    indices: ExtractionIndices,
+    buffer: WriteBuffer,
+    backend: ModelBackend | None = None,
+) -> StreamExtractResult:
+    """Pass 3: stream ingest records, apply Rules 1/2/5/6/6b inline, defer 3+4 and 7.
+
+    Rules 3+4 (hierarchy) are resolved inline when indices.name_to_node is
+    populated (built in Pass 2). Otherwise path_tasks is populated for deferred
+    post-stream resolution.  Rule 7 (LLM) deferred records are processed after
+    the loop when a backend is provided.
+    """
+    dataset_id = dataset_ctx.dataset_id
+    id_field = dataset_ctx.id_field
+    type_field = dataset_ctx.type_field
+    type_map = _node_type_map(dataset_ctx)
+    rel_map = _rel_type_map(dataset_ctx)
+    rel_label_map = _rel_label_map(dataset_ctx)
+    result = StreamExtractResult(write_result=buffer.result)
+    phantom_nodes_seen: dict[str, bool] = {}
+
+    for record in records_iter:
+        uid = record.get(id_field)
+        type_name = record.get(type_field)
+
+        # Rule 1: primary node
+        if uid and type_name:
+            label = type_map.get(type_name, type_name)
+            await buffer.add_node(Node(
+                id=f"{dataset_id}:{uid}",
+                label=label,
+                properties={
+                    **_resolve_property_paths(record, dataset_ctx.property_paths),
+                    **_scalar_properties(record),
+                },
+                source_record_id=uid,
+                extraction_source=ExtractionSource.RULE_BASED,
+            ))
+
+        # Rule 2: nested collections
+        if uid:
+            parent_label = type_map.get(type_name, type_name) if type_name else ""
+            for nc in dataset_ctx.nested_collections:
+                items = _get_nested(record, nc.field)
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    child_uid = item.get(nc.id_field)
+                    if not child_uid:
+                        continue
+                    await buffer.add_node(Node(
+                        id=f"{dataset_id}:{child_uid}",
+                        label=nc.child_label,
+                        properties={k: v for k, v in item.items() if not isinstance(v, (dict, list))},
+                        source_record_id=uid,
+                        extraction_source=ExtractionSource.RULE_BASED,
+                    ))
+                    await buffer.add_rel(Relationship(
+                        from_id=f"{dataset_id}:{uid}",
+                        to_id=f"{dataset_id}:{child_uid}",
+                        from_label=parent_label,
+                        to_label=nc.child_label,
+                        type=nc.edge_type,
+                        properties={},
+                        source_record_id=uid,
+                        extraction_source=ExtractionSource.RULE_BASED,
+                    ))
+
+        # Rules 3+4: hierarchy — inline when index is available
+        if uid and dataset_ctx.hierarchy_config is not None:
+            cfg = dataset_ctx.hierarchy_config
+            path = record.get(cfg.field, "")
+            if path:
+                segments = [s.strip() for s in path.split(cfg.separator) if s.strip()]
+                if len(segments) >= 2:
+                    if indices.name_to_node:
+                        await _emit_hierarchy_inline(
+                            segments, uid, dataset_id, cfg, indices.name_to_node, buffer,
+                            phantom_nodes_seen,
+                        )
+                    else:
+                        result.path_tasks.append((uid, path, str(uid)))
+
+        # Rule 5: associations
+        ac = dataset_ctx.association_config
+        if ac is not None and uid:
+            this_label = type_map.get(type_name, type_name) if type_name else ""
+            this_id = f"{dataset_id}:{uid}"
+            for assoc in record.get(ac.array_field, []):
+                edge_name = assoc.get(ac.edge_name_subfield, "")
+                partner_id_raw = assoc.get(ac.partner_id_subfield)
+                direction = (
+                    assoc.get(ac.direction_subfield, ac.direction_default)
+                    if ac.direction_subfield else ac.direction_default
+                )
+                if partner_id_raw is None or str(partner_id_raw).strip() == "":
+                    continue
+                canonical_type = rel_map.get(edge_name)
+                if not canonical_type:
+                    continue
+                from_label, to_label = rel_label_map.get(edge_name, ("", ""))
+                partner_id = f"{dataset_id}:{partner_id_raw}"
+                from_id, to_id = (this_id, partner_id) if direction == "out" else (partner_id, this_id)
+                await buffer.add_rel(Relationship(
+                    from_id=from_id, to_id=to_id,
+                    from_label=from_label, to_label=to_label,
+                    type=canonical_type, properties={},
+                    source_record_id=uid,
+                    extraction_source=ExtractionSource.RULE_BASED,
+                ))
+
+        # Rule 6: implicit FKs
+        for ir in dataset_ctx.implicit_relationships:
+            fk_value = record.get(ir.edge_name)
+            if not uid or fk_value is None:
+                continue
+            this_label = type_map.get(type_name, type_name) if type_name else ""
+            target_ds = ir.target_dataset_id if ir.cross_dataset else dataset_id
+            await buffer.add_rel(Relationship(
+                from_id=f"{dataset_id}:{uid}",
+                to_id=f"{target_ds}:{fk_value}",
+                from_label=this_label or ir.from_type,
+                to_label=ir.to_type,
+                type=ir.maps_to, properties={},
+                source_record_id=uid,
+                extraction_source=ExtractionSource.RULE_BASED,
+            ))
+
+        # Rule 6b: path FKs
+        for pfk in dataset_ctx.path_fk_relationships:
+            index = indices.path_value_index.get(pfk.target_field, {})
+            if not uid:
+                continue
+            this_label = type_map.get(type_name, type_name) if type_name else ""
+            from_id = f"{dataset_id}:{uid}"
+            if pfk.container_path is None:
+                fk_value = record.get(pfk.fk_field)
+                if fk_value:
+                    to_id = index.get(str(fk_value))
+                    if to_id:
+                        await buffer.add_rel(Relationship(
+                            from_id=from_id, to_id=to_id,
+                            from_label=pfk.from_type or this_label, to_label=pfk.to_type,
+                            type=pfk.maps_to, properties={},
+                            source_record_id=uid,
+                            extraction_source=ExtractionSource.RULE_BASED,
+                        ))
+            else:
+                container = _get_nested(record, pfk.container_path)
+                if isinstance(container, list):
+                    for item in container:
+                        if isinstance(item, dict):
+                            fk_value = item.get(pfk.fk_field)
+                            if fk_value:
+                                to_id = index.get(str(fk_value))
+                                if to_id:
+                                    await buffer.add_rel(Relationship(
+                                        from_id=from_id, to_id=to_id,
+                                        from_label=pfk.from_type or this_label, to_label=pfk.to_type,
+                                        type=pfk.maps_to, properties={},
+                                        source_record_id=uid,
+                                        extraction_source=ExtractionSource.RULE_BASED,
+                                    ))
+
+        # Rule 7: collect LLM-eligible records for deferred processing
+        if dataset_ctx.ambiguous_fields and any(f in record for f in dataset_ctx.ambiguous_fields):
+            result.llm_buffer.append(record)
+
+    await buffer.flush_all()
+
+    if dataset_ctx.ambiguous_fields and backend is not None and result.llm_buffer:
+        llm_nodes, llm_rels = await _llm_extract_ambiguous(
+            result.llm_buffer, dataset_ctx, type_map, backend
+        )
+        for node in llm_nodes:
+            await buffer.add_node(node)
+        for rel in llm_rels:
+            await buffer.add_rel(rel)
+        await buffer.flush_all()
+
+    return result
