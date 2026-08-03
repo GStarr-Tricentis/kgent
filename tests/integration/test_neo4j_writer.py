@@ -263,12 +263,18 @@ def _make_mock_driver(fail_on_batch_index: int | None = None):
         call_counter["n"] += 1
 
         tx = AsyncMock()
-        summary = MagicMock()
-        summary.counters.nodes_created = 1
-        summary.counters.relationships_created = 0
-        run_result = AsyncMock()
-        run_result.consume.return_value = summary
-        tx.run.return_value = run_result
+
+        async def _run(cypher, **kwargs):
+            rows = kwargs.get("rows", [])
+            row_count = len(rows) if rows else 1
+            summary = MagicMock()
+            summary.counters.nodes_created = row_count
+            summary.counters.relationships_created = row_count
+            run_result = AsyncMock()
+            run_result.consume.return_value = summary
+            return run_result
+
+        tx.run.side_effect = _run
 
         if idx == fail_on_batch_index:
             tx.commit.side_effect = RuntimeError(f"Simulated failure on batch {idx}")

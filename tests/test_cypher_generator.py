@@ -291,3 +291,39 @@ class TestGenerateExtractionSourceIndexStatements:
         from graph_pipeline.cypher_generator import generate_extraction_source_index_statements
         stmts = generate_extraction_source_index_statements(["Requirement"])
         assert any("Requirement" in s for s in stmts)
+
+
+# ---------------------------------------------------------------------------
+# generate_node_merge_batch / generate_relationship_merge_batch
+# ---------------------------------------------------------------------------
+
+def test_generate_node_merge_batch_contains_unwind():
+    from graph_pipeline.cypher_generator import generate_node_merge_batch
+    cypher = generate_node_merge_batch("TestCase")
+    assert "UNWIND $rows AS row" in cypher
+    assert "MERGE (n:TestCase {id: row.id})" in cypher
+    assert "SET n += row.props" in cypher
+    assert "SET n.ingested_at = datetime()" in cypher
+    assert "row.extraction_source" in cypher
+
+
+def test_generate_relationship_merge_batch_contains_unwind():
+    from graph_pipeline.cypher_generator import generate_relationship_merge_batch
+    cypher = generate_relationship_merge_batch("TestCase", "Requirement", "COVERS")
+    assert "UNWIND $rows AS row" in cypher
+    assert "MATCH (a:TestCase {id: row.from_id})" in cypher
+    assert "MATCH (b:Requirement {id: row.to_id})" in cypher
+    assert "MERGE (a)-[r:COVERS]->(b)" in cypher
+    assert "row.extraction_source" in cypher
+
+
+def test_generate_relationship_merge_batch_no_ingested_at():
+    from graph_pipeline.cypher_generator import generate_relationship_merge_batch
+    cypher = generate_relationship_merge_batch("A", "B", "REL")
+    assert "ingested_at" not in cypher
+
+
+def test_generate_node_merge_batch_label_is_interpolated():
+    from graph_pipeline.cypher_generator import generate_node_merge_batch
+    assert "XModule" in generate_node_merge_batch("XModule")
+    assert "Folder" in generate_node_merge_batch("Folder")
