@@ -21,6 +21,7 @@ class RegisteredTool(BaseModel):
     callable: Any  # Callable[[dict], str]
     source: ToolSource
     timeout_seconds: float = 30.0
+    close: Any | None = None
 
 
 class ToolCall(BaseModel):

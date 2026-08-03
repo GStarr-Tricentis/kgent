@@ -196,18 +196,16 @@ async def make_cypher_tool(config: KgentConfig) -> RegisteredTool:
         model_override=resolved_model,
     )
 
+    from neo4j import GraphDatabase
+    uri = os.environ["NEO4J_URI"]
+    username = os.environ["NEO4J_USERNAME"]
+    password = os.environ["NEO4J_PASSWORD"]
+    driver = GraphDatabase.driver(uri, auth=(username, password))
+
     async def _query_graph(args: dict) -> str:
         question: str = args["question"]
         logger.info("question received: %r", question)
-        driver = None
         try:
-            from neo4j import GraphDatabase
-
-            uri = os.environ["NEO4J_URI"]
-            username = os.environ["NEO4J_USERNAME"]
-            password = os.environ["NEO4J_PASSWORD"]
-            driver = GraphDatabase.driver(uri, auth=(username, password))
-
             schema_str = await _get_cached_schema(
                 driver, uri,
                 budget=config.cypher_tool.schema_budget,
@@ -287,13 +285,8 @@ async def make_cypher_tool(config: KgentConfig) -> RegisteredTool:
 
             return _format_results(records)
 
-        except KeyError as exc:
-            return f"Error: missing required environment variable {exc}."
         except Exception as exc:
             return f"Error: {exc}"
-        finally:
-            if driver is not None:
-                driver.close()
 
     return RegisteredTool(
         name="query_graph",
@@ -305,4 +298,5 @@ async def make_cypher_tool(config: KgentConfig) -> RegisteredTool:
         callable=_query_graph,
         source=ToolSource.GENERATED,
         timeout_seconds=config.cypher_tool.timeout_seconds,
+        close=driver.close,
     )
