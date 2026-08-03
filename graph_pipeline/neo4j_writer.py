@@ -261,3 +261,157 @@ async def write_all(
     result.merge(rel_result)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped helpers — used by WriteBuffer to share one open session
+# ---------------------------------------------------------------------------
+
+async def _write_nodes_to_session(
+    nodes: list[Node],
+    session,
+    batch_size: int,
+    result: WriteResult,
+) -> None:
+    """Write nodes through an already-open session; mutates result in place."""
+    if not nodes:
+        return
+
+    by_label: dict[str, list[Node]] = {}
+    for node in nodes:
+        by_label.setdefault(node.label, []).append(node)
+
+    batch_index = 0
+    for label, label_nodes in by_label.items():
+        cypher = generate_node_merge_batch(label)
+        for i in range(0, len(label_nodes), batch_size):
+            chunk = label_nodes[i : i + batch_size]
+            params = {
+                "rows": [
+                    {
+                        "id": n.id,
+                        "props": n.properties,
+                        "extraction_source": n.extraction_source.value,
+                    }
+                    for n in chunk
+                ]
+            }
+            await _run_batch(
+                session, [(cypher, params)], batch_index, result,
+                count_key_created="nodes_created",
+                count_key_matched="nodes_matched",
+            )
+            batch_index += 1
+
+
+async def _write_rels_to_session(
+    rels: list[Relationship],
+    session,
+    batch_size: int,
+    result: WriteResult,
+) -> None:
+    """Write relationships through an already-open session; mutates result in place."""
+    if not rels:
+        return
+
+    valid_rels = []
+    for r in rels:
+        if not r.from_label or not r.to_label:
+            msg = f"Skipping relationship {r.type} ({r.from_id} -> {r.to_id}): missing label"
+            logger.warning(msg)
+            result.errors.append(msg)
+        else:
+            valid_rels.append(r)
+
+    if not valid_rels:
+        return
+
+    by_triple: dict[tuple[str, str, str], list[Relationship]] = {}
+    for r in valid_rels:
+        by_triple.setdefault((r.from_label, r.to_label, r.type), []).append(r)
+
+    batch_index = 0
+    for (from_label, to_label, rel_type), triple_rels in by_triple.items():
+        cypher = generate_relationship_merge_batch(from_label, to_label, rel_type)
+        for i in range(0, len(triple_rels), batch_size):
+            chunk = triple_rels[i : i + batch_size]
+            params = {
+                "rows": [
+                    {
+                        "from_id": r.from_id,
+                        "to_id": r.to_id,
+                        "extraction_source": r.extraction_source.value,
+                    }
+                    for r in chunk
+                ]
+            }
+            await _run_batch(
+                session, [(cypher, params)], batch_index, result,
+                count_key_created="relationships_created",
+                count_key_matched="relationships_matched",
+            )
+            batch_index += 1
+
+
+# ---------------------------------------------------------------------------
+# WriteBuffer
+# ---------------------------------------------------------------------------
+
+class WriteBuffer:
+    """Accumulate extracted nodes and relationships; flush to Neo4j in batches.
+
+    Holds a single open session for its lifetime so repeated flushes share the
+    same connection. Must be used as an async context manager:
+
+        async with WriteBuffer(driver, batch_size=500) as buf:
+            await buf.add_node(node)
+            ...
+        # session closed; any buffered remainder flushed before close
+    """
+
+    def __init__(self, driver, batch_size: int = 500) -> None:
+        self._driver = driver
+        self._batch_size = batch_size
+        self._nodes: list[Node] = []
+        self._rels: list[Relationship] = []
+        self._session = None
+        self.result = WriteResult()
+
+    async def __aenter__(self) -> "WriteBuffer":
+        self._session = self._driver.session()
+        await self._session.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is None:
+                await self.flush_all()
+        finally:
+            if self._session is not None:
+                await self._session.__aexit__(exc_type, exc_val, exc_tb)
+        return False
+
+    async def add_node(self, node: Node) -> None:
+        self._nodes.append(node)
+        if len(self._nodes) >= self._batch_size:
+            await self._flush_nodes()
+
+    async def add_rel(self, rel: Relationship) -> None:
+        self._rels.append(rel)
+        if len(self._rels) >= self._batch_size:
+            await self._flush_rels()
+
+    async def flush_all(self) -> None:
+        """Flush any remaining buffered nodes and relationships."""
+        if self._nodes:
+            await self._flush_nodes()
+        if self._rels:
+            await self._flush_rels()
+
+    async def _flush_nodes(self) -> None:
+        await _write_nodes_to_session(self._nodes, self._session, self._batch_size, self.result)
+        self._nodes = []
+
+    async def _flush_rels(self) -> None:
+        await _write_rels_to_session(self._rels, self._session, self._batch_size, self.result)
+        self._rels = []
