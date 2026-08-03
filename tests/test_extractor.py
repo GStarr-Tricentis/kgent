@@ -1500,3 +1500,74 @@ class TestPathFKRelationships:
         assert len(nodes) == 1
         assert all(r.extraction_source.value != "RULE_BASED" or r.type != "HAS_CHILD"
                    for r in rels)
+
+
+# ---------------------------------------------------------------------------
+# build_extraction_indices (Pass 2)
+# ---------------------------------------------------------------------------
+
+class TestBuildExtractionIndices:
+    def _ctx_with_pfk(self, target_field="nodePath"):
+        return make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+            path_fk_relationships=[{
+                "fk_field": "nodePath",
+                "target_field": target_field,
+                "maps_to": "BELONGS_TO",
+                "from_type": "TestCase",
+                "to_type": "Folder",
+            }],
+        )
+
+    def test_name_index_populated(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+        )
+        records = [
+            {"uniqueId": "tc-1", "typeName": "TestCase", "name": "Login"},
+            {"uniqueId": "tc-2", "typeName": "TestCase", "name": "Logout"},
+        ]
+        indices = build_extraction_indices(iter(records), ctx)
+        assert "Login" in indices.name_to_node
+        assert indices.name_to_node["Login"] == ("ds1:tc-1", "TestCase")
+        assert "Logout" in indices.name_to_node
+        assert indices.name_to_node["Logout"] == ("ds1:tc-2", "TestCase")
+
+    def test_path_value_index_populated(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = self._ctx_with_pfk(target_field="nodePath")
+        records = [
+            {"uniqueId": "tc-1", "typeName": "TestCase", "name": "Login", "nodePath": "foo"},
+        ]
+        indices = build_extraction_indices(iter(records), ctx)
+        assert "nodePath" in indices.path_value_index
+        assert indices.path_value_index["nodePath"]["foo"] == "ds1:tc-1"
+
+    def test_records_without_id_or_type_skipped(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+        )
+        records = [
+            {"typeName": "TestCase", "name": "No ID"},          # missing uniqueId
+            {"uniqueId": "tc-1", "name": "No Type"},            # missing typeName
+            {"uniqueId": "tc-2", "typeName": "TestCase", "name": "Valid"},
+        ]
+        indices = build_extraction_indices(iter(records), ctx)
+        assert len(indices.name_to_node) == 1
+        assert "Valid" in indices.name_to_node
+
+    def test_path_value_index_key_initialized_even_if_no_records_match(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = self._ctx_with_pfk(target_field="nodePath")
+        records = [
+            {"uniqueId": "tc-1", "typeName": "TestCase", "name": "Login"},
+            # no record has a "nodePath" field
+        ]
+        indices = build_extraction_indices(iter(records), ctx)
+        assert "nodePath" in indices.path_value_index
+        assert indices.path_value_index["nodePath"] == {}

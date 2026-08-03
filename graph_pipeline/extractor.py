@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterator
 
 from kgent.agent.types import ModelBackend
 from graph_pipeline.context_store import DatasetContext, HierarchyConfig, PathFKRelationship, SharedContext
@@ -543,3 +545,58 @@ async def extract_all(
         all_rels.extend(llm_rels)
 
     return all_nodes, all_rels
+
+
+# ---------------------------------------------------------------------------
+# Pass 2: index build for streaming extraction
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ExtractionIndices:
+    # For Rule 3+4: {node_name: (namespaced_node_id, label)}
+    name_to_node: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # For Rule 6b: {target_field: {field_value: namespaced_node_id}}
+    path_value_index: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+def build_extraction_indices(
+    records_iter: Iterator[dict],
+    dataset_ctx: DatasetContext,
+) -> ExtractionIndices:
+    """Pass 2: stream ingest records to build lookup indices for deferred rules.
+
+    Runs in O(N) time and O(N) memory in index entries (not record size).
+    Must complete before Pass 3 (extract_and_write_stream) begins.
+    """
+    indices = ExtractionIndices()
+    dataset_id = dataset_ctx.dataset_id
+    id_field = dataset_ctx.id_field
+    type_field = dataset_ctx.type_field
+    type_map = _node_type_map(dataset_ctx)
+
+    # Initialise path_value_index keys from config so the key exists even when
+    # no record has the target field.
+    for pfk in dataset_ctx.path_fk_relationships:
+        indices.path_value_index.setdefault(pfk.target_field, {})
+
+    for record in records_iter:
+        uid = record.get(id_field)
+        type_name = record.get(type_field)
+        if not uid or not type_name:
+            continue
+
+        label = type_map.get(type_name, type_name)
+        namespaced_id = f"{dataset_id}:{uid}"
+
+        # name_to_node: used by hierarchy resolver (Rules 3+4)
+        name = record.get("name")
+        if name:
+            indices.name_to_node[str(name)] = (namespaced_id, label)
+
+        # path_value_index: used by Rule 6b
+        for target_field in indices.path_value_index:
+            val = record.get(target_field)
+            if val is not None:
+                indices.path_value_index[target_field][str(val)] = namespaced_id
+
+    return indices
