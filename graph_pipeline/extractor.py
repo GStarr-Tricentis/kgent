@@ -624,8 +624,9 @@ async def _emit_hierarchy_inline(
     name_to_node: dict[str, tuple[str, str]],
     buffer: WriteBuffer,
     phantom_nodes_seen: dict[str, bool],
-) -> None:
-    """Emit hierarchy nodes and edges inline during the streaming pass."""
+) -> list[Relationship]:
+    """Emit hierarchy nodes inline and return edges for deferred write."""
+    rels: list[Relationship] = []
     for i in range(len(segments) - 1):
         parent_seg = segments[i]
         child_seg = segments[i + 1]
@@ -665,13 +666,14 @@ async def _emit_hierarchy_inline(
                     extraction_source=ExtractionSource.PHANTOM,
                 ))
 
-        await buffer.add_rel(Relationship(
+        rels.append(Relationship(
             from_id=parent_id, to_id=child_id,
             from_label=parent_label, to_label=child_label,
             type=config.edge_type, properties={},
             source_record_id=leaf_uid,
             extraction_source=ExtractionSource.RULE_BASED,
         ))
+    return rels
 
 
 async def extract_and_write_stream(
@@ -697,6 +699,7 @@ async def extract_and_write_stream(
     rel_label_map = _rel_label_map(dataset_ctx)
     result = StreamExtractResult(write_result=buffer.result)
     phantom_nodes_seen: dict[str, bool] = {}
+    pending_rels: list[Relationship] = []
 
     for record in records_iter:
         uid = record.get(id_field)
@@ -734,7 +737,7 @@ async def extract_and_write_stream(
                         source_record_id=uid,
                         extraction_source=ExtractionSource.RULE_BASED,
                     ))
-                    await buffer.add_rel(Relationship(
+                    pending_rels.append(Relationship(
                         from_id=f"{dataset_id}:{uid}",
                         to_id=f"{dataset_id}:{child_uid}",
                         from_label=parent_label,
@@ -753,10 +756,10 @@ async def extract_and_write_stream(
                 segments = [s.strip() for s in path.split(cfg.separator) if s.strip()]
                 if len(segments) >= 2:
                     if indices.name_to_node:
-                        await _emit_hierarchy_inline(
+                        pending_rels.extend(await _emit_hierarchy_inline(
                             segments, uid, dataset_id, cfg, indices.name_to_node, buffer,
                             phantom_nodes_seen,
-                        )
+                        ))
                     else:
                         result.path_tasks.append((uid, path, str(uid)))
 
@@ -780,7 +783,7 @@ async def extract_and_write_stream(
                 from_label, to_label = rel_label_map.get(edge_name, ("", ""))
                 partner_id = f"{dataset_id}:{partner_id_raw}"
                 from_id, to_id = (this_id, partner_id) if direction == "out" else (partner_id, this_id)
-                await buffer.add_rel(Relationship(
+                pending_rels.append(Relationship(
                     from_id=from_id, to_id=to_id,
                     from_label=from_label, to_label=to_label,
                     type=canonical_type, properties={},
@@ -795,7 +798,7 @@ async def extract_and_write_stream(
                 continue
             this_label = type_map.get(type_name, type_name) if type_name else ""
             target_ds = ir.target_dataset_id if ir.cross_dataset else dataset_id
-            await buffer.add_rel(Relationship(
+            pending_rels.append(Relationship(
                 from_id=f"{dataset_id}:{uid}",
                 to_id=f"{target_ds}:{fk_value}",
                 from_label=this_label or ir.from_type,
@@ -817,7 +820,7 @@ async def extract_and_write_stream(
                 if fk_value:
                     to_id = index.get(str(fk_value))
                     if to_id:
-                        await buffer.add_rel(Relationship(
+                        pending_rels.append(Relationship(
                             from_id=from_id, to_id=to_id,
                             from_label=pfk.from_type or this_label, to_label=pfk.to_type,
                             type=pfk.maps_to, properties={},
@@ -833,7 +836,7 @@ async def extract_and_write_stream(
                             if fk_value:
                                 to_id = index.get(str(fk_value))
                                 if to_id:
-                                    await buffer.add_rel(Relationship(
+                                    pending_rels.append(Relationship(
                                         from_id=from_id, to_id=to_id,
                                         from_label=pfk.from_type or this_label, to_label=pfk.to_type,
                                         type=pfk.maps_to, properties={},
@@ -845,7 +848,11 @@ async def extract_and_write_stream(
         if dataset_ctx.ambiguous_fields and any(f in record for f in dataset_ctx.ambiguous_fields):
             result.llm_buffer.append(record)
 
-    await buffer.flush_all()
+    await buffer.flush_all()          # flush all remaining nodes first
+
+    for rel in pending_rels:
+        await buffer.add_rel(rel)
+    await buffer.flush_all()          # flush all deferred rels (endpoints now guaranteed in Neo4j)
 
     if dataset_ctx.ambiguous_fields and backend is not None and result.llm_buffer:
         llm_nodes, llm_rels = await _llm_extract_ambiguous(

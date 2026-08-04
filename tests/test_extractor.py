@@ -1583,16 +1583,20 @@ class _FakeWriteBuffer:
         self.nodes: list = []
         self.rels: list = []
         self.flush_count: int = 0
+        self.call_log: list[str] = []
         self.result = WriteResult()
 
     async def add_node(self, node):
         self.nodes.append(node)
+        self.call_log.append("add_node")
 
     async def add_rel(self, rel):
         self.rels.append(rel)
+        self.call_log.append("add_rel")
 
     async def flush_all(self):
         self.flush_count += 1
+        self.call_log.append("flush_all")
 
 
 class TestExtractAndWriteStream:
@@ -1765,3 +1769,40 @@ class TestExtractAndWriteStream:
         buf = _FakeWriteBuffer()
         await extract_and_write_stream(iter(records), ctx, None, ExtractionIndices(), buf)
         assert buf.flush_count >= 1
+
+    async def test_stream_nodes_flushed_before_rels(self):
+        """Guard: no add_rel call may appear before the first flush_all in the call log."""
+        from graph_pipeline.extractor import ExtractionIndices, extract_and_write_stream
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[
+                {"name": "TestCase", "maps_to": "TestCase"},
+                {"name": "Requirement", "maps_to": "Requirement"},
+            ],
+            relationship_types=[
+                {
+                    "name": "Requirement",
+                    "maps_to": "COVERS",
+                    "from_type": "TestCase",
+                    "to_type": "Requirement",
+                }
+            ],
+        )
+        record = {
+            "uniqueId": "r1", "typeName": "TestCase",
+            "associations": [
+                {"edgeName": "Requirement", "partnerId": "r2", "direction": "out"}
+            ],
+        }
+        buf = _FakeWriteBuffer()
+        await extract_and_write_stream(
+            iter([record]), ctx, None, ExtractionIndices(), buf,
+        )
+        # The first add_rel entry must not appear before the first flush_all entry
+        first_flush = next((i for i, c in enumerate(buf.call_log) if c == "flush_all"), None)
+        first_rel = next((i for i, c in enumerate(buf.call_log) if c == "add_rel"), None)
+        assert first_flush is not None, "flush_all was never called"
+        if first_rel is not None:
+            assert first_rel > first_flush, (
+                "add_rel appeared before flush_all — rel ordering regression"
+            )
