@@ -2,6 +2,7 @@
 
 Run with: pytest tests/test_loaders.py
 """
+import json as _json
 import os
 import pytest
 
@@ -276,3 +277,88 @@ class TestAutoDetect:
         from graph_pipeline.loaders import load
         records = load(fix("sample.jsonl"))
         assert isinstance(records, list)
+
+
+# ---------------------------------------------------------------------------
+# Helpers for stream tests
+# ---------------------------------------------------------------------------
+
+def _record_set(records):
+    """Convert records to a set of JSON strings for order-independent comparison."""
+    return {_json.dumps(r, sort_keys=True, default=str) for r in records}
+
+
+# ---------------------------------------------------------------------------
+# JsonlLoader stream
+# ---------------------------------------------------------------------------
+
+class TestJsonlLoaderStream:
+    def test_stream_jsonl_yields_same_records_as_load(self):
+        from graph_pipeline.loaders.jsonl_loader import JsonlLoader
+        loader = JsonlLoader()
+        loaded = loader.load(fix("sample.jsonl"))
+        streamed = list(loader.stream(fix("sample.jsonl")))
+        assert _record_set(loaded) == _record_set(streamed)
+
+    def test_stream_jsonl_skips_header_record(self):
+        from graph_pipeline.loaders.jsonl_loader import JsonlLoader
+        streamed = list(JsonlLoader().stream(fix("sample.jsonl")))
+        assert all(r.get("kind") != "export-dump-header" for r in streamed)
+
+
+# ---------------------------------------------------------------------------
+# CsvLoader stream
+# ---------------------------------------------------------------------------
+
+class TestCsvLoaderStream:
+    def test_stream_csv_yields_same_records_as_load(self):
+        from graph_pipeline.loaders.csv_loader import CsvLoader
+        loader = CsvLoader()
+        loaded = loader.load(fix("sample.csv"))
+        streamed = list(loader.stream(fix("sample.csv")))
+        assert _record_set(loaded) == _record_set(streamed)
+
+    def test_stream_tsv_yields_same_records_as_load(self):
+        from graph_pipeline.loaders.csv_loader import CsvLoader
+        loader = CsvLoader()
+        loaded = loader.load(fix("sample.tsv"))
+        streamed = list(loader.stream(fix("sample.tsv")))
+        assert _record_set(loaded) == _record_set(streamed)
+
+
+# ---------------------------------------------------------------------------
+# SqlLoader stream
+# ---------------------------------------------------------------------------
+
+class TestSqlLoaderStream:
+    def test_stream_sql_yields_same_records_as_load(self):
+        from graph_pipeline.loaders.sql_loader import SqlLoader
+        loader = SqlLoader()
+        loaded = loader.load(fix("sample.sqlite"))
+        streamed = list(loader.stream(fix("sample.sqlite")))
+        assert _record_set(loaded) == _record_set(streamed)
+
+
+# ---------------------------------------------------------------------------
+# JsonLoader stream
+# ---------------------------------------------------------------------------
+
+class TestJsonLoaderStream:
+    def test_stream_json_yields_same_records_as_load(self):
+        from graph_pipeline.loaders.json_loader import JsonLoader
+        loader = JsonLoader()
+        loaded = loader.load(fix("sample_array.json"))
+        streamed = list(loader.stream(fix("sample_array.json")))
+        assert _record_set(loaded) == _record_set(streamed)
+
+
+# ---------------------------------------------------------------------------
+# Auto-detection stream()
+# ---------------------------------------------------------------------------
+
+class TestAutoDetectStream:
+    def test_stream_top_level_function_dispatches_to_loader(self):
+        from graph_pipeline.loaders import load, stream
+        loaded = load(fix("sample.jsonl"))
+        streamed = list(stream(fix("sample.jsonl")))
+        assert _record_set(loaded) == _record_set(streamed)

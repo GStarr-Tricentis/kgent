@@ -1500,3 +1500,268 @@ class TestPathFKRelationships:
         assert len(nodes) == 1
         assert all(r.extraction_source.value != "RULE_BASED" or r.type != "HAS_CHILD"
                    for r in rels)
+
+
+# ---------------------------------------------------------------------------
+# build_extraction_indices (Pass 2)
+# ---------------------------------------------------------------------------
+
+class TestBuildExtractionIndices:
+    def _ctx_with_pfk(self, target_field="nodePath"):
+        return make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+            path_fk_relationships=[{
+                "fk_field": "nodePath",
+                "target_field": target_field,
+                "maps_to": "BELONGS_TO",
+                "from_type": "TestCase",
+                "to_type": "Folder",
+            }],
+        )
+
+    def test_name_index_populated(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+        )
+        records = [
+            {"uniqueId": "tc-1", "typeName": "TestCase", "name": "Login"},
+            {"uniqueId": "tc-2", "typeName": "TestCase", "name": "Logout"},
+        ]
+        indices = build_extraction_indices(iter(records), ctx)
+        assert "Login" in indices.name_to_node
+        assert indices.name_to_node["Login"] == ("ds1:tc-1", "TestCase")
+        assert "Logout" in indices.name_to_node
+        assert indices.name_to_node["Logout"] == ("ds1:tc-2", "TestCase")
+
+    def test_path_value_index_populated(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = self._ctx_with_pfk(target_field="nodePath")
+        records = [
+            {"uniqueId": "tc-1", "typeName": "TestCase", "name": "Login", "nodePath": "foo"},
+        ]
+        indices = build_extraction_indices(iter(records), ctx)
+        assert "nodePath" in indices.path_value_index
+        assert indices.path_value_index["nodePath"]["foo"] == "ds1:tc-1"
+
+    def test_records_without_id_or_type_skipped(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+        )
+        records = [
+            {"typeName": "TestCase", "name": "No ID"},          # missing uniqueId
+            {"uniqueId": "tc-1", "name": "No Type"},            # missing typeName
+            {"uniqueId": "tc-2", "typeName": "TestCase", "name": "Valid"},
+        ]
+        indices = build_extraction_indices(iter(records), ctx)
+        assert len(indices.name_to_node) == 1
+        assert "Valid" in indices.name_to_node
+
+    def test_path_value_index_key_initialized_even_if_no_records_match(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = self._ctx_with_pfk(target_field="nodePath")
+        records = [
+            {"uniqueId": "tc-1", "typeName": "TestCase", "name": "Login"},
+            # no record has a "nodePath" field
+        ]
+        indices = build_extraction_indices(iter(records), ctx)
+        assert "nodePath" in indices.path_value_index
+
+
+# ---------------------------------------------------------------------------
+# extract_and_write_stream — streaming extraction (Phase 5)
+# ---------------------------------------------------------------------------
+
+class _FakeWriteBuffer:
+    """Captures add_node/add_rel calls without writing to Neo4j."""
+    def __init__(self):
+        from graph_pipeline.neo4j_writer import WriteResult
+        self.nodes: list = []
+        self.rels: list = []
+        self.flush_count: int = 0
+        self.result = WriteResult()
+
+    async def add_node(self, node):
+        self.nodes.append(node)
+
+    async def add_rel(self, rel):
+        self.rels.append(rel)
+
+    async def flush_all(self):
+        self.flush_count += 1
+
+
+class TestExtractAndWriteStream:
+    async def test_stream_rule1_primary_node_added_to_buffer(self):
+        from graph_pipeline.extractor import ExtractionIndices, extract_and_write_stream
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+        )
+        records = [{"uniqueId": "tc-001", "typeName": "TestCase", "name": "Login"}]
+        buf = _FakeWriteBuffer()
+        await extract_and_write_stream(iter(records), ctx, None, ExtractionIndices(), buf)
+        node_ids = [n.id for n in buf.nodes]
+        assert "ds1:tc-001" in node_ids
+        matched = next(n for n in buf.nodes if n.id == "ds1:tc-001")
+        assert matched.label == "TestCase"
+
+    async def test_stream_rule2_nested_collection_nodes_and_rels(self):
+        from graph_pipeline.extractor import ExtractionIndices, extract_and_write_stream
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[
+                {"name": "XModule", "maps_to": "XModule"},
+                {"name": "ModuleElement", "maps_to": "ModuleElement"},
+            ],
+            nested_collections=[
+                {
+                    "field": "details.moduleAttributes",
+                    "child_label": "ModuleElement",
+                    "edge_type": "HAS_ELEMENT",
+                    "id_field": "uniqueId",
+                }
+            ],
+        )
+        records = [
+            {
+                "uniqueId": "xm-001",
+                "typeName": "XModule",
+                "name": "Login Module",
+                "details": {
+                    "moduleAttributes": [
+                        {"uniqueId": "attr-001", "name": "username"},
+                        {"uniqueId": "attr-002", "name": "password"},
+                    ]
+                },
+            }
+        ]
+        buf = _FakeWriteBuffer()
+        await extract_and_write_stream(iter(records), ctx, None, ExtractionIndices(), buf)
+        node_ids = {n.id for n in buf.nodes}
+        assert "ds1:attr-001" in node_ids
+        assert "ds1:attr-002" in node_ids
+        has_element_rels = [r for r in buf.rels if r.type == "HAS_ELEMENT"]
+        assert len(has_element_rels) == 2
+        assert has_element_rels[0].from_id == "ds1:xm-001"
+
+    async def test_stream_rule5_association_edges(self):
+        from graph_pipeline.extractor import ExtractionIndices, extract_and_write_stream
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[
+                {"name": "TestCase", "maps_to": "TestCase"},
+                {"name": "Requirement", "maps_to": "Requirement"},
+            ],
+            relationship_types=[
+                {
+                    "name": "Requirement",
+                    "maps_to": "COVERS",
+                    "from_type": "TestCase",
+                    "to_type": "Requirement",
+                }
+            ],
+        )
+        records = [
+            {
+                "uniqueId": "tc-001",
+                "typeName": "TestCase",
+                "name": "Login",
+                "associations": [
+                    {"edgeName": "Requirement", "partnerId": "req-001", "direction": "out"}
+                ],
+            }
+        ]
+        buf = _FakeWriteBuffer()
+        await extract_and_write_stream(iter(records), ctx, None, ExtractionIndices(), buf)
+        covers = [r for r in buf.rels if r.type == "COVERS"]
+        assert len(covers) == 1
+        assert covers[0].from_id == "ds1:tc-001"
+        assert covers[0].to_id == "ds1:req-001"
+
+    async def test_stream_rule6_implicit_fk(self):
+        from graph_pipeline.extractor import ExtractionIndices, extract_and_write_stream
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[
+                {"name": "TestCase", "maps_to": "TestCase"},
+                {"name": "XModule", "maps_to": "XModule"},
+            ],
+            implicit_relationships=[
+                {
+                    "description": "moduleUniqueId FK to XModule",
+                    "pattern": "direct_fk",
+                    "edge_name": "moduleUniqueId",
+                    "maps_to": "USES_MODULE",
+                    "cross_dataset": False,
+                    "target_dataset_id": None,
+                }
+            ],
+        )
+        records = [
+            {
+                "uniqueId": "tc-001",
+                "typeName": "TestCase",
+                "name": "Login",
+                "moduleUniqueId": "xm-001",
+            }
+        ]
+        buf = _FakeWriteBuffer()
+        await extract_and_write_stream(iter(records), ctx, None, ExtractionIndices(), buf)
+        fk_rels = [r for r in buf.rels if r.type == "USES_MODULE"]
+        assert len(fk_rels) == 1
+        assert fk_rels[0].from_id == "ds1:tc-001"
+        assert fk_rels[0].to_id == "ds1:xm-001"
+
+    async def test_stream_phantom_nodes_not_duplicated(self):
+        """Two records sharing the same phantom parent must emit only one phantom node."""
+        from graph_pipeline.extractor import ExtractionIndices, build_extraction_indices, extract_and_write_stream
+        from graph_pipeline.models import ExtractionSource
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+        )
+        records = [
+            {"uniqueId": "tc-1", "typeName": "TestCase", "name": "A", "nodePath": "Root/A"},
+            {"uniqueId": "tc-2", "typeName": "TestCase", "name": "B", "nodePath": "Root/B"},
+        ]
+        # Pass 2: build name_to_node so _emit_hierarchy_inline is used in Pass 3
+        indices = build_extraction_indices(iter(records), ctx)
+        assert indices.name_to_node  # guard: must be non-empty to trigger inline path
+
+        buf = _FakeWriteBuffer()
+        await extract_and_write_stream(iter(records), ctx, None, indices, buf)
+
+        phantom_ids = [n.id for n in buf.nodes if n.extraction_source == ExtractionSource.PHANTOM]
+        assert phantom_ids.count("ds1:path:Root") == 1
+
+    async def test_stream_llm_buffer_populated_for_ambiguous_records(self):
+        from graph_pipeline.extractor import ExtractionIndices, extract_and_write_stream
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+            ambiguous_fields=["description"],
+        )
+        records = [
+            {"uniqueId": "tc-1", "typeName": "TestCase", "name": "A", "description": "some text"},
+            {"uniqueId": "tc-2", "typeName": "TestCase", "name": "B"},
+        ]
+        buf = _FakeWriteBuffer()
+        result = await extract_and_write_stream(iter(records), ctx, None, ExtractionIndices(), buf)
+        assert len(result.llm_buffer) == 1
+        assert result.llm_buffer[0]["uniqueId"] == "tc-1"
+
+    async def test_stream_flush_all_called_at_end_of_extraction(self):
+        from graph_pipeline.extractor import ExtractionIndices, extract_and_write_stream
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+        )
+        records = [{"uniqueId": "tc-1", "typeName": "TestCase", "name": "A"}]
+        buf = _FakeWriteBuffer()
+        await extract_and_write_stream(iter(records), ctx, None, ExtractionIndices(), buf)
+        assert buf.flush_count >= 1

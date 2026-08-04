@@ -4,6 +4,8 @@ import hashlib
 import json
 import random
 from collections import Counter, defaultdict
+from dataclasses import dataclass
+from typing import Iterator
 
 _TYPE_FIELD_CANDIDATES = ["typeName", "type", "kind", "__type", "category"]
 
@@ -191,3 +193,91 @@ def compute_fingerprint(records: list[dict], type_field: str | None = None) -> s
     all_keys = sorted({k for r in records for k in r.keys()})
     payload = json.dumps({"types": dict(counts), "keys": all_keys}, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Streaming pre-scan (Pass 1)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PrescanResult:
+    sample: list[dict]
+    fingerprint: str
+    current_hashes: dict[str, str]
+    ingest_ids: set[str]
+    deleted_ids: set[str]
+    type_field: str | None
+    type_counts: Counter
+    total_records: int
+
+
+def prescan(
+    records_iter: Iterator[dict],
+    id_field: str,
+    stored_hashes: dict[str, str],
+    sample_size: int = 50,
+) -> PrescanResult:
+    """Single-pass pre-scan: sample, fingerprint, hash, and diff — without loading.
+
+    Uses reservoir sampling (Algorithm R) rather than stratified sampling.
+    The sample is used for schema discovery where diversity matters more than
+    exact proportionality.
+    """
+    reservoir: list[dict] = []
+    current_hashes: dict[str, str] = {}
+    type_counts: Counter = Counter()
+    type_field_detected: str | None = None
+    total = 0
+
+    for record in records_iter:
+        total += 1
+
+        # Reservoir sampling (Algorithm R)
+        if len(reservoir) < sample_size:
+            reservoir.append(_truncate_nested_arrays(record))
+        else:
+            j = random.randint(0, total - 1)
+            if j < sample_size:
+                reservoir[j] = _truncate_nested_arrays(record)
+
+        # Detect type field on the first record that has one
+        if type_field_detected is None:
+            for candidate in _TYPE_FIELD_CANDIDATES:
+                if candidate in record:
+                    type_field_detected = candidate
+                    break
+
+        if type_field_detected and type_field_detected in record:
+            type_counts[record[type_field_detected]] += 1
+
+        # Record hash
+        record_id = record.get(id_field)
+        if record_id is not None:
+            digest = hashlib.sha256(
+                json.dumps(record, sort_keys=True, ensure_ascii=False).encode()
+            ).hexdigest()[:16]
+            current_hashes[str(record_id)] = digest
+
+    # Fingerprint from type distribution + sorted key set of sample
+    all_keys_in_sample = sorted({k for r in reservoir for k in r.keys()})
+    fp_payload = json.dumps(
+        {"types": dict(type_counts), "keys": all_keys_in_sample}, sort_keys=True
+    )
+    fingerprint = hashlib.sha256(fp_payload.encode()).hexdigest()[:16]
+
+    ingest_ids = {
+        rid for rid, h in current_hashes.items()
+        if stored_hashes.get(rid) != h
+    }
+    deleted_ids = set(stored_hashes.keys()) - set(current_hashes.keys())
+
+    return PrescanResult(
+        sample=reservoir,
+        fingerprint=fingerprint,
+        current_hashes=current_hashes,
+        ingest_ids=ingest_ids,
+        deleted_ids=deleted_ids,
+        type_field=type_field_detected,
+        type_counts=type_counts,
+        total_records=total,
+    )

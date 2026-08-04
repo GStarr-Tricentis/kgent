@@ -1,4 +1,5 @@
 import csv
+from typing import Iterator
 
 from graph_pipeline.loaders.base import DataLoader
 
@@ -32,3 +33,9 @@ class CsvLoader(DataLoader):
             for row in reader:
                 records.append({k: _coerce(v) for k, v in row.items()})
         return records
+
+    def stream(self, path: str) -> Iterator[dict]:
+        delimiter = "\t" if path.endswith(".tsv") else ","
+        with open(path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f, delimiter=delimiter):
+                yield {k: _coerce(v) for k, v in row.items()}

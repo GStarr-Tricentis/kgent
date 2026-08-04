@@ -1,4 +1,5 @@
 import json
+from typing import Iterator
 
 from graph_pipeline.loaders.base import DataLoader
 
@@ -31,3 +32,7 @@ class JsonLoader(DataLoader):
             return records
 
         return []
+
+    def stream(self, path: str) -> Iterator[dict]:
+        # JSON has no streaming format; load fully then yield.
+        yield from self.load(path)

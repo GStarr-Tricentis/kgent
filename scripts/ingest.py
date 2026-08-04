@@ -107,26 +107,28 @@ async def main() -> None:
     TOTAL_STEPS = 8
 
     # -------------------------------------------------------------------------
-    # Step 1: Load + sample
+    # Step 1: Pre-scan (Pass 1) — sample, fingerprint, and diff in one stream pass
     # -------------------------------------------------------------------------
     _step(1, TOTAL_STEPS, f"Sampling {sample_size} records from {Path(file_path).name}...")
-    from graph_pipeline.loaders import load as load_file
-    records = load_file(file_path)
+    from graph_pipeline.loaders import stream as stream_file
+    from graph_pipeline.sampler import prescan
+    from graph_pipeline.context_store import load_record_hashes
 
-    from graph_pipeline.sampler import sample_records, summarize_structure
-    sample = sample_records(records, n=sample_size)
+    stored_hashes = {} if args.full_ingest else load_record_hashes(dataset_id)
+    scan = prescan(
+        stream_file(file_path),
+        id_field="uniqueId",  # Tosca default; overridden after schema discovery
+        stored_hashes=stored_hashes,
+        sample_size=sample_size,
+    )
+    sample = scan.sample
+    fingerprint = scan.fingerprint
 
-    from collections import Counter
-    from graph_pipeline.sampler import _detect_type_field
-    detected_type_field = _detect_type_field(records)
-    if detected_type_field:
-        type_counts = Counter(r.get(detected_type_field, "?") for r in records)
-        type_summary = ", ".join(f"{t}({c})" for t, c in type_counts.most_common())
+    if scan.type_counts:
+        type_summary = ", ".join(f"{t}({c})" for t, c in scan.type_counts.most_common())
     else:
-        type_summary = f"{len(records)} records (no type field detected)"
-    _indent(f"Loaded {len(records)} records. Types: {type_summary}")
-    from graph_pipeline.sampler import compute_fingerprint
-    fingerprint = compute_fingerprint(records, detected_type_field)
+        type_summary = f"{scan.total_records} records (no type field detected)"
+    _indent(f"Loaded {scan.total_records} records. Types: {type_summary}")
 
     # -------------------------------------------------------------------------
     # Step 2: Load shared context
@@ -136,8 +138,6 @@ async def main() -> None:
     shared_ctx = load_shared_context()
     _indent(f"v{shared_ctx.version}, {len(shared_ctx.node_types)} known node types")
 
-    # Load prior context now, before overwriting with the new proposal
-    from graph_pipeline.context_store import load_dataset_context
     prior_ctx = load_dataset_context(dataset_id)
 
     # -------------------------------------------------------------------------
@@ -186,7 +186,6 @@ async def main() -> None:
     _step(4, TOTAL_STEPS, "Reviewing dataset context...")
     prior_version_exists = prior_ctx is not None
 
-    # Determine whether to require review
     require_review = True
     if args.dry_run:
         require_review = False
@@ -213,7 +212,6 @@ async def main() -> None:
             print("\nAborted.")
             sys.exit(0)
 
-    # Reload in case the user edited the file (skipped in dry-run — no file was saved)
     if args.dry_run:
         dataset_ctx = proposed_ctx
     else:
@@ -223,53 +221,24 @@ async def main() -> None:
             sys.exit(1)
 
     # -------------------------------------------------------------------------
-    # Incremental: filter to changed / new records
+    # Incremental: report changed / deleted counts; early-exit if nothing to do
     # -------------------------------------------------------------------------
-    from graph_pipeline.sampler import compute_record_hashes
-    from graph_pipeline.context_store import load_record_hashes
-
-    current_hashes = compute_record_hashes(records, dataset_ctx.id_field)
-    stored_hashes = load_record_hashes(dataset_id)
-    deleted_ids = set(stored_hashes.keys()) - set(current_hashes.keys())
-
-    if not args.full_ingest and current_hashes:
-        changed_ids = {
-            rid for rid, h in current_hashes.items()
-            if stored_hashes.get(rid) != h
-        }
-        ingest_records = [
-            r for r in records
-            if str(r.get(dataset_ctx.id_field, "")) in changed_ids
-        ]
-        unchanged_count = len(records) - len(ingest_records)
-        if unchanged_count:
-            _indent(
-                f"{unchanged_count} unchanged record(s) skipped; "
-                f"{len(ingest_records)} to process."
-            )
-        if deleted_ids:
-            _indent(f"{len(deleted_ids)} deleted record(s) detected.")
-        if not ingest_records and not (args.prune_deleted and deleted_ids):
-            _indent("All records unchanged — nothing to ingest.")
-            print("\nDone.")
-            return
-    else:
-        ingest_records = records
+    unchanged_count = scan.total_records - len(scan.ingest_ids)
+    if unchanged_count:
+        _indent(
+            f"{unchanged_count} unchanged record(s) skipped; "
+            f"{len(scan.ingest_ids)} to process."
+        )
+    if scan.deleted_ids:
+        _indent(f"{len(scan.deleted_ids)} deleted record(s) detected.")
+    if not scan.ingest_ids and not (args.prune_deleted and scan.deleted_ids):
+        _indent("All records unchanged — nothing to ingest.")
+        print("\nDone.")
+        return
 
     # -------------------------------------------------------------------------
-    # Step 5: Extract
+    # Driver initialisation (needed by Steps 5 and 7)
     # -------------------------------------------------------------------------
-    _step(5, TOTAL_STEPS, "Extracting nodes and relationships...")
-    from graph_pipeline.extractor import extract_all
-    nodes, rels = await extract_all(ingest_records, dataset_ctx, shared_ctx, backend=backend)
-    _indent(f"{len(nodes)} nodes, {len(rels)} relationships")
-
-    # -------------------------------------------------------------------------
-    # Step 6: Validate
-    # -------------------------------------------------------------------------
-    _step(6, TOTAL_STEPS, "Validating...")
-    from graph_pipeline.validator import check_referential_integrity, check_label_coverage, spot_check
-
     driver = None
     if not args.dry_run:
         import neo4j as _neo4j
@@ -281,65 +250,91 @@ async def main() -> None:
             sys.exit(1)
         driver = _neo4j.AsyncGraphDatabase.driver(uri, auth=(username, password))
 
-    integrity_errors = await check_referential_integrity(nodes, rels, driver=driver)
-    dangling = [e for e in integrity_errors if e.severity == "error"]
-    warnings_integrity = [e for e in integrity_errors if e.severity == "warning"]
+    # -------------------------------------------------------------------------
+    # Pass 2: Build extraction indices (index-build stream pass)
+    # -------------------------------------------------------------------------
+    from graph_pipeline.extractor import build_extraction_indices
+    indices = build_extraction_indices(
+        (r for r in stream_file(file_path)
+         if str(r.get(dataset_ctx.id_field, "")) in scan.ingest_ids),
+        dataset_ctx,
+    )
 
-    dangling_ids = {e.entity_id for e in dangling if e.entity_id}
+    # -------------------------------------------------------------------------
+    # Step 5: Streaming extract + write (Pass 3)
+    # -------------------------------------------------------------------------
+    _step(5, TOTAL_STEPS, "Extracting nodes and relationships...")
+    from graph_pipeline.extractor import extract_and_write_stream
+    from graph_pipeline.neo4j_writer import WriteBuffer, WriteResult
 
-    if dangling_ids:
-        before = len(rels)
-        rels = [r for r in rels if r.from_id not in dangling_ids and r.to_id not in dangling_ids]
-        _indent(f"  ⚠ {len(dangling_ids)} dangling endpoint(s) — skipped {before - len(rels)} relationship(s)")
+    write_result = WriteResult()
+    if not args.dry_run:
+        async with WriteBuffer(driver, batch_size=batch_size) as buffer:
+            await extract_and_write_stream(
+                (r for r in stream_file(file_path)
+                 if str(r.get(dataset_ctx.id_field, "")) in scan.ingest_ids),
+                dataset_ctx, shared_ctx, indices, buffer,
+            )
+        write_result = buffer.result
+
+    # -------------------------------------------------------------------------
+    # Step 6: Validate
+    # -------------------------------------------------------------------------
+    _step(6, TOTAL_STEPS, "Validating...")
+    from graph_pipeline.validator import check_label_coverage
+    from graph_pipeline.models import ExtractionSource, Node
 
     phantom_labels = (
         {dataset_ctx.hierarchy_config.phantom_label}
         if dataset_ctx.hierarchy_config is not None
         else set()
     )
-    label_issues = check_label_coverage(nodes, shared_ctx, phantom_labels=phantom_labels)
+    # In the streaming path nodes are written to Neo4j, not retained in memory.
+    # Synthesise representative nodes from dataset_ctx to check label coverage.
+    _probe_nodes = [
+        Node(id="", label=nt.maps_to, properties={}, source_record_id="",
+             extraction_source=ExtractionSource.RULE_BASED)
+        for nt in dataset_ctx.node_types
+    ]
+    for _nc in dataset_ctx.nested_collections:
+        _probe_nodes.append(Node(
+            id="", label=_nc.child_label, properties={}, source_record_id="",
+            extraction_source=ExtractionSource.RULE_BASED,
+        ))
+    label_issues = check_label_coverage(_probe_nodes, shared_ctx, phantom_labels=phantom_labels)
     warnings_labels = [e for e in label_issues if e.severity == "warning"]
-
-    if warnings_integrity or warnings_labels:
-        for w in warnings_integrity + warnings_labels:
+    if warnings_labels:
+        for w in warnings_labels:
             _indent(f"  ⚠ {w.message}")
 
-    report = spot_check(nodes, rels, records, id_field=dataset_ctx.id_field)
-    _indent(f"Spot check ({len(report.sampled)} records):")
-    for rec in report.sampled:
-        found = "✓" if rec.node_found else "✗"
-        rels_str = ", ".join(rec.relationships) if rec.relationships else "0 relationships"
-        _indent(f"    {found} record {rec.record_id} → {rels_str}")
+    _indent(f"{write_result.nodes_created} nodes created, {write_result.nodes_matched} matched")
+    _indent(f"{write_result.relationships_created} rels created, {write_result.relationships_matched} matched")
+    if write_result.errors:
+        for err in write_result.errors:
+            prefix = "  ⚠" if err.startswith("Skipping relationship") else "  ✗"
+            _indent(f"{prefix} {err}")
 
     # -------------------------------------------------------------------------
-    # Step 7: Write to Neo4j (or skip for dry-run)
+    # Step 7: Post-write: soft-delete pruned records and save hashes
     # -------------------------------------------------------------------------
     _step(7, TOTAL_STEPS, "Writing to Neo4j..." if not args.dry_run else "Writing to Neo4j... (DRY RUN — skipped)")
 
     if not args.dry_run:
-        from graph_pipeline.neo4j_writer import write_all
-        result = await write_all(nodes, rels, driver, batch_size=batch_size)
-        _indent(f"{len(nodes)} nodes ({result.nodes_created} created, {result.nodes_matched} matched)")
-        _indent(f"{len(rels)} relationships ({result.relationships_created} created, {result.relationships_matched} matched)")
-        fatal_errors = [e for e in result.errors if not e.startswith("Skipping relationship")]
-        if result.errors:
-            for err in result.errors:
-                prefix = "  ⚠" if err.startswith("Skipping relationship") else "  ✗"
-                _indent(f"{prefix} {err}")
+        fatal_errors = [e for e in write_result.errors if not e.startswith("Skipping relationship")]
         if fatal_errors:
             print("\nERROR: write errors occurred.", file=sys.stderr)
             await driver.close()
             sys.exit(1)
-        if args.prune_deleted and deleted_ids:
+        if args.prune_deleted and scan.deleted_ids:
             from graph_pipeline.neo4j_writer import soft_delete_nodes
-            namespaced = [f"{dataset_id}:{rid}" for rid in deleted_ids]
+            namespaced = [f"{dataset_id}:{rid}" for rid in scan.deleted_ids]
             node_labels = [nt.maps_to for nt in dataset_ctx.node_types]
             soft_deleted_count = await soft_delete_nodes(namespaced, driver, labels=node_labels)
             _indent(f"  {soft_deleted_count} node(s) soft-deleted (deleted_at set; not removed from graph)")
             _indent("  Query with: MATCH (n) WHERE n.deleted_at IS NOT NULL")
         await driver.close()
         from graph_pipeline.context_store import save_record_hashes
-        save_record_hashes(dataset_id, current_hashes)
+        save_record_hashes(dataset_id, scan.current_hashes)
     else:
         _indent("(dry run — no data written)")
 
