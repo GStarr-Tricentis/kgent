@@ -223,6 +223,47 @@ async def _llm_call(
     raise RuntimeError(f"{label} failed after {max_retries} attempts. Last error: {last_error}")
 
 
+def _scan_nested_collection_candidates(
+    sample: list[dict],
+    id_field: str,
+) -> list[dict]:
+    """Scan sample records for array-of-objects fields whose items contain id_field.
+
+    Checks top-level fields and one level deep into dict-valued fields (e.g.
+    details.moduleAttributes). Returns a list of candidate dicts, each with:
+      - field: dot-path to the array (e.g. "moduleAttributes", "details.steps")
+      - example_keys: sorted list of keys from the first matching item
+      - records_with_field: count of sample records where the field is non-empty
+    """
+    candidates: dict[str, dict] = {}
+
+    def _check_array(field_path: str, value) -> None:
+        if not isinstance(value, list):
+            return
+        items_with_id = [
+            item for item in value
+            if isinstance(item, dict) and item.get(id_field) is not None
+        ]
+        if not items_with_id:
+            return
+        if field_path not in candidates:
+            candidates[field_path] = {
+                "field": field_path,
+                "example_keys": sorted(items_with_id[0].keys()),
+                "records_with_field": 0,
+            }
+        candidates[field_path]["records_with_field"] += 1
+
+    for record in sample:
+        for key, value in record.items():
+            _check_array(key, value)
+            if isinstance(value, dict):
+                for subkey, subvalue in value.items():
+                    _check_array(f"{key}.{subkey}", subvalue)
+
+    return list(candidates.values())
+
+
 # ---------------------------------------------------------------------------
 # Call 1: node types
 # ---------------------------------------------------------------------------
@@ -233,6 +274,7 @@ async def _propose_node_types(
     backend: ModelBackend,
     max_retries: int,
     type_field: str | None = None,
+    nested_candidates: list[dict] | None = None,
 ) -> tuple[list[DatasetNodeType], dict]:
     """Return (node_types, structural_config). structural_config is {} if the LLM omits it."""
     template = _NODES_PROMPT_PATH.read_text(encoding="utf-8")
@@ -253,6 +295,11 @@ async def _propose_node_types(
         shared_context_yaml=_serialize_shared_context(shared_context),
         structure_summary=summarize_structure(sample),
         sample_records_json=json.dumps(node_sample, indent=2, ensure_ascii=False),
+        nested_collection_candidates=(
+            json.dumps(nested_candidates, indent=2, ensure_ascii=False)
+            if nested_candidates
+            else "(none detected)"
+        ),
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -550,6 +597,63 @@ async def _resolve_ambiguous_field_rules(
     return valid_rules
 
 
+def _validate_association_partner_types(
+    rel_types: list[DatasetRelationshipType],
+    assoc_config: dict,
+    sample: list[dict],
+    id_field: str,
+    type_field: str,
+) -> list[DatasetRelationshipType]:
+    """Clear to_type on association rules where sample partners have multiple concrete types.
+
+    Builds a uid→typeName map from the sample, then for each relationship_type
+    checks whether the actual partner types seen in sample associations are
+    heterogeneous. If they are, clears to_type to "" so the Cypher generator
+    emits a labelless MATCH rather than silently dropping rels to the minority type.
+    """
+    if not assoc_config or not rel_types:
+        return rel_types
+
+    array_field = assoc_config.get("array_field", "associations")
+    edge_name_sub = assoc_config.get("edge_name_subfield", "edgeName")
+    partner_id_sub = assoc_config.get("partner_id_subfield", "partnerUniqueId")
+
+    uid_type: dict[str, str] = {}
+    for record in sample:
+        uid = record.get(id_field)
+        tname = record.get(type_field)
+        if uid is not None and tname is not None:
+            uid_type[str(uid)] = str(tname)
+
+    edge_partner_types: dict[str, set[str]] = {}
+    for record in sample:
+        for assoc in record.get(array_field, []):
+            if not isinstance(assoc, dict):
+                continue
+            edge_name = assoc.get(edge_name_sub)
+            partner_id = assoc.get(partner_id_sub)
+            if not edge_name or partner_id is None:
+                continue
+            ptype = uid_type.get(str(partner_id))
+            if ptype:
+                edge_partner_types.setdefault(edge_name, set()).add(ptype)
+
+    updated: list[DatasetRelationshipType] = []
+    for rt in rel_types:
+        partner_types = edge_partner_types.get(rt.name, set())
+        if len(partner_types) > 1:
+            logger.warning(
+                "association '%s' has heterogeneous partner types %s — "
+                "clearing to_type (was '%s') to allow labelless MATCH",
+                rt.name, sorted(partner_types), rt.to_type,
+            )
+            updated.append(rt.model_copy(update={"to_type": ""}))
+        else:
+            updated.append(rt)
+
+    return updated
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -569,8 +673,15 @@ async def propose_dataset_context(
     import datetime
 
     type_field = _detect_type_field(sample)
+    _prescan_id_field = next(
+        (k for k in ("uniqueId", "id", "uuid") if any(k in r for r in sample)),
+        "uniqueId",
+    )
+    nested_candidates = _scan_nested_collection_candidates(sample, _prescan_id_field)
     node_types, structural_config = await _propose_node_types(
-        sample, shared_context, backend, max_retries, type_field=type_field
+        sample, shared_context, backend, max_retries,
+        type_field=type_field,
+        nested_candidates=nested_candidates,
     )
 
     hierarchy_field: str | None = None
@@ -580,6 +691,13 @@ async def propose_dataset_context(
 
     rel_types, implicit_rels, path_fk_rels, assoc_config_dict = await _propose_relationship_types(
         sample, node_types, backend, max_retries, hierarchy_field=hierarchy_field
+    )
+    rel_types = _validate_association_partner_types(
+        rel_types,
+        assoc_config_dict,
+        sample,
+        id_field=structural_config.get("id_field") or "uniqueId",
+        type_field=structural_config.get("type_field") or "typeName",
     )
 
     handled_fields: list[str] = []

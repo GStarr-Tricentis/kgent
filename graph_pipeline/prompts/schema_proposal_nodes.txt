@@ -8,6 +8,17 @@ EXISTING SCHEMA (reuse these canonical names where applicable):
 DATASET STRUCTURE SUMMARY:
 {structure_summary}
 
+PRE-IDENTIFIED NESTED COLLECTION CANDIDATES:
+{nested_collection_candidates}
+
+These fields were found to contain arrays of objects where each item has an ID
+field. For each candidate, decide whether the items represent distinct entities
+that deserve their own nodes (e.g. UI attributes, test steps with their own
+identity, sub-components). If yes, include the field in nested_collections with
+an appropriate child_label (PascalCase) and edge_type (SCREAMING_SNAKE_CASE).
+Exclude candidates where the array contains config blobs, lookup tables, or
+items that are already modeled as top-level records in node_types.
+
 SAMPLE RECORDS:
 {sample_records_json}
 

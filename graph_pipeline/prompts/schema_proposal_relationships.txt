@@ -17,14 +17,43 @@ TASK — return a JSON object with two keys:
    Each association has an "edgeName" field. Map each edgeName to a SCREAMING_SNAKE_CASE relationship type.
    Example: {{"name": "covers", "maps_to": "COVERS", "from": "TestCase", "to": "Requirement"}}
 
-2. "implicit_relationships": foreign key references embedded in record fields (e.g. a field ending in "UniqueId" or "Id" that points to another node).
-   Example: {{"description": "test step references a module", "pattern": "step_uses_module", "edge_name": "moduleUniqueId", "maps_to": "USES_MODULE", "from_type": "TestStep", "to_type": "Module", "cross_dataset": false, "target_dataset_id": null}}
+2. "implicit_relationships": top-level record fields that are direct foreign key
+   references to another node (e.g. a field ending in "UniqueId" or "Id" at the
+   root of the record). For the same type of ID reference found *inside* a nested
+   array, use path_fk_relationships instead (see item 3b below).
+   Example: {{"description": "test step references a module", "pattern":
+   "step_uses_module", "edge_name": "moduleUniqueId", "maps_to": "USES_MODULE",
+   "from_type": "TestStep", "to_type": "Module", "cross_dataset": false,
+   "target_dataset_id": null}}
 
-3. "path_fk_relationships": fields (possibly inside nested arrays) whose values are path strings matching another record's nodePath, rather than a direct uniqueId. Use this when you see a field containing "/" -separated path strings that visibly match nodePath values of typed records in the sample.
-   * Set container_path to the dot-path of the array to iterate, or null if the field is directly on the record.
-   * target_field is almost always "nodePath".
-   Example: entries inside an ExecutionList have a "testCaseNodePath" field whose values match the nodePath of TestCase records.
-   {{"container_path": "details.entries", "fk_field": "testCaseNodePath", "target_field": "nodePath", "maps_to": "REFERENCES_TEST_CASE", "from_type": "ExecutionList", "to_type": "TestCase"}}
+3. "path_fk_relationships": fields inside nested arrays that reference other
+   records. Two sub-cases:
+
+   a) PATH-BASED: the fk_field contains "/" -separated path strings matching
+      another record's nodePath. Set target_field to "nodePath".
+      Set container_path to the dot-path of the array, or null if the field is
+      directly on the record.
+      Example — entries inside an ExecutionList have "testCaseNodePath" matching
+      TestCase nodePaths:
+      {{"container_path": "details.entries", "fk_field": "testCaseNodePath",
+      "target_field": "nodePath", "maps_to": "REFERENCES_TEST_CASE",
+      "from_type": "ExecutionList", "to_type": "TestCase"}}
+
+   b) ID-BASED: the fk_field inside a nested array contains raw uniqueId values
+      referencing another node. Fields ending in "UniqueId" or "Id" inside nested
+      arrays are the signal. Set target_field to "uniqueId". Set container_path to
+      the dot-path of the array. Set to_type to "" if the partner could be multiple
+      concrete types.
+      Example — each step inside details.steps has "moduleUniqueId" pointing to a
+      module record (which could be XModule or ApiModule):
+      {{"container_path": "details.steps", "fk_field": "moduleUniqueId",
+      "target_field": "uniqueId", "maps_to": "STEP_USES_MODULE",
+      "from_type": "", "to_type": ""}}
+
+   For EACH field listed under "Nested array-of-object fields" in the structure
+   summary, inspect the sample to see whether items contain fields ending in
+   "UniqueId" or "Id". If yes, propose a path_fk_relationship with
+   target_field: "uniqueId".
 
 Return ONLY this JSON object — no explanation, no markdown, no extra text.
 Always include all four keys: "relationship_types", "implicit_relationships", "association_config", and "path_fk_relationships".
@@ -45,11 +74,11 @@ Always include all four keys: "relationship_types", "implicit_relationships", "a
   }},
   "path_fk_relationships": [
     {{"container_path": "<dot-path to array, or null>",
-      "fk_field": "<field holding the path string>",
-      "target_field": "nodePath",
+      "fk_field": "<field holding the path string or ID value>",
+      "target_field": "<'nodePath' for path-string match, 'uniqueId' for direct ID match>",
       "maps_to": "<SCREAMING_SNAKE_CASE>",
-      "from_type": "<canonical label of source>",
-      "to_type": "<canonical label of target>"}}
+      "from_type": "<canonical label of source, or '' to use the record's own type>",
+      "to_type": "<canonical label of target, or '' if multiple concrete types possible>"}}
   ]
 }}
 
@@ -66,6 +95,10 @@ Rules:
 - If you see no associations and no FK fields, return empty arrays — do not invent relationships
 - Use SCREAMING_SNAKE_CASE for all maps_to values
 - Do NOT propose the hierarchy path field as an implicit FK — its values are tree-location strings (e.g. "/Root/Folder/Entity"), not record IDs referencing other nodes
-- Implicit FK edge_name values must be top-level record fields whose raw values directly match the id_field (typically uniqueId) of another record — fields ending in "UniqueId" or "Id" are the primary signal
+- implicit_relationships are for top-level record fields only; for the same
+  pattern inside a nested array, use path_fk_relationships with
+  target_field: "uniqueId" instead
+- For each nested array listed in the structure summary, check whether items
+  have fields ending in "UniqueId" or "Id" — if yes, propose a path_fk_relationship
 - Only propose a path_fk_relationship when the path string values in the sample visibly match the nodePath values of typed records — do not guess
 - Return path_fk_relationships: [] if no path-valued FK fields are found

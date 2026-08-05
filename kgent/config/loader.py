@@ -71,7 +71,7 @@ class SandboxConfig(BaseModel):
 class GraphPipelineConfig(BaseModel):
     context_dir: str = "context/"
     default_sample_size: int = 650
-    default_batch_size: int = 500
+    default_batch_size: int = 2000
     default_model: str = "qwen3:8b"
 
 

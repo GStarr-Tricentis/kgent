@@ -114,7 +114,7 @@ async def create_constraints(labels: list[str], driver) -> None:
 async def write_nodes(
     nodes: list[Node],
     driver,
-    batch_size: int = 500,
+    batch_size: int = 2000,
 ) -> WriteResult:
     """Write nodes in batches. All batches are attempted; errors accumulate in result.errors."""
     result = WriteResult()
@@ -153,27 +153,15 @@ async def write_nodes(
 async def write_relationships(
     rels: list[Relationship],
     driver,
-    batch_size: int = 500,
+    batch_size: int = 2000,
 ) -> WriteResult:
     """Write relationships in batches. All batches are attempted; errors accumulate in result.errors."""
     result = WriteResult()
     if not rels:
         return result
 
-    valid_rels = []
-    for r in rels:
-        if not r.from_label or not r.to_label:
-            msg = f"Skipping relationship {r.type} ({r.from_id} -> {r.to_id}): missing label"
-            logger.warning(msg)
-            result.errors.append(msg)
-        else:
-            valid_rels.append(r)
-
-    if not valid_rels:
-        return result
-
     by_triple: dict[tuple[str, str, str], list[Relationship]] = {}
-    for r in valid_rels:
+    for r in rels:
         by_triple.setdefault((r.from_label, r.to_label, r.type), []).append(r)
 
     async with driver.session() as session:
@@ -239,7 +227,7 @@ async def write_all(
     nodes: list[Node],
     rels: list[Relationship],
     driver,
-    batch_size: int = 500,
+    batch_size: int = 2000,
 ) -> WriteResult:
     """Full write: constraints → nodes → relationships.
 
@@ -314,20 +302,8 @@ async def _write_rels_to_session(
     if not rels:
         return
 
-    valid_rels = []
-    for r in rels:
-        if not r.from_label or not r.to_label:
-            msg = f"Skipping relationship {r.type} ({r.from_id} -> {r.to_id}): missing label"
-            logger.warning(msg)
-            result.errors.append(msg)
-        else:
-            valid_rels.append(r)
-
-    if not valid_rels:
-        return
-
     by_triple: dict[tuple[str, str, str], list[Relationship]] = {}
-    for r in valid_rels:
+    for r in rels:
         by_triple.setdefault((r.from_label, r.to_label, r.type), []).append(r)
 
     batch_index = 0
@@ -363,13 +339,13 @@ class WriteBuffer:
     Holds a single open session for its lifetime so repeated flushes share the
     same connection. Must be used as an async context manager:
 
-        async with WriteBuffer(driver, batch_size=500) as buf:
+        async with WriteBuffer(driver, batch_size=2000) as buf:
             await buf.add_node(node)
             ...
         # session closed; any buffered remainder flushed before close
     """
 
-    def __init__(self, driver, batch_size: int = 500) -> None:
+    def __init__(self, driver, batch_size: int = 2000) -> None:
         self._driver = driver
         self._batch_size = batch_size
         self._nodes: list[Node] = []
