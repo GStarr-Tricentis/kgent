@@ -480,9 +480,11 @@ async def _emit_hierarchy_inline(
     name_to_node: dict[str, tuple[str, str]],
     buffer: WriteBuffer,
     phantom_nodes_seen: dict[str, bool],
-) -> list[Relationship]:
-    """Emit hierarchy nodes inline and return edges for deferred write."""
-    rels: list[Relationship] = []
+    write_nodes: bool = True,
+    write_rels: bool = True,
+) -> None:
+    """Emit hierarchy phantom nodes and CONTAINS edges inline.
+    Node and rel writes are individually gated by write_nodes and write_rels."""
     for i in range(len(segments) - 1):
         parent_seg = segments[i]
         child_seg = segments[i + 1]
@@ -496,11 +498,12 @@ async def _emit_hierarchy_inline(
             parent_label = config.phantom_label
             if parent_id not in phantom_nodes_seen:
                 phantom_nodes_seen[parent_id] = True
-                await buffer.add_node(Node(
-                    id=parent_id, label=config.phantom_label,
-                    properties={"name": parent_seg}, source_record_id="",
-                    extraction_source=ExtractionSource.PHANTOM,
-                ))
+                if write_nodes:
+                    await buffer.add_node(Node(
+                        id=parent_id, label=config.phantom_label,
+                        properties={"name": parent_seg}, source_record_id="",
+                        extraction_source=ExtractionSource.PHANTOM,
+                    ))
 
         # Resolve child
         if is_leaf:
@@ -516,20 +519,21 @@ async def _emit_hierarchy_inline(
             child_label = config.phantom_label
             if child_id not in phantom_nodes_seen:
                 phantom_nodes_seen[child_id] = True
-                await buffer.add_node(Node(
-                    id=child_id, label=config.phantom_label,
-                    properties={"name": child_seg}, source_record_id="",
-                    extraction_source=ExtractionSource.PHANTOM,
-                ))
+                if write_nodes:
+                    await buffer.add_node(Node(
+                        id=child_id, label=config.phantom_label,
+                        properties={"name": child_seg}, source_record_id="",
+                        extraction_source=ExtractionSource.PHANTOM,
+                    ))
 
-        rels.append(Relationship(
-            from_id=parent_id, to_id=child_id,
-            from_label=parent_label, to_label=child_label,
-            type=config.edge_type, properties={},
-            source_record_id=leaf_uid,
-            extraction_source=ExtractionSource.RULE_BASED,
-        ))
-    return rels
+        if write_rels:
+            await buffer.add_rel(Relationship(
+                from_id=parent_id, to_id=child_id,
+                from_label=parent_label, to_label=child_label,
+                type=config.edge_type, properties={},
+                source_record_id=leaf_uid,
+                extraction_source=ExtractionSource.RULE_BASED,
+            ))
 
 
 def _apply_ambiguous_field_rules(
@@ -575,13 +579,15 @@ async def extract_and_write_stream(
     shared_ctx: SharedContext | None,
     indices: ExtractionIndices,
     buffer: WriteBuffer,
+    write_nodes: bool = True,
+    write_rels: bool = True,
 ) -> StreamExtractResult:
-    """Pass 3: stream ingest records, apply Rules 1/2/5/6/6b inline, defer 3+4 and 7.
+    """Pass 3: stream ingest records, apply all rules inline. Writes are gated by
+    write_nodes and write_rels to support two-pass (nodes-then-rels) orchestration.
 
     Rules 3+4 (hierarchy) are resolved inline when indices.name_to_node is
     populated (built in Pass 2). Otherwise path_tasks is populated for deferred
-    post-stream resolution.  Rule 7 (LLM) deferred records are processed after
-    the loop when a backend is provided.
+    post-stream resolution.
     """
     dataset_id = dataset_ctx.dataset_id
     id_field = dataset_ctx.id_field
@@ -591,7 +597,6 @@ async def extract_and_write_stream(
     rel_label_map = _rel_label_map(dataset_ctx)
     result = StreamExtractResult(write_result=buffer.result)
     phantom_nodes_seen: dict[str, bool] = {}
-    pending_rels: list[Relationship] = []
 
     for record in records_iter:
         uid = record.get(id_field)
@@ -600,16 +605,17 @@ async def extract_and_write_stream(
         # Rule 1: primary node
         if uid and type_name:
             label = type_map.get(type_name, type_name)
-            await buffer.add_node(Node(
-                id=f"{dataset_id}:{uid}",
-                label=label,
-                properties={
-                    **_resolve_property_paths(record, dataset_ctx.property_paths),
-                    **_scalar_properties(record),
-                },
-                source_record_id=uid,
-                extraction_source=ExtractionSource.RULE_BASED,
-            ))
+            if write_nodes:
+                await buffer.add_node(Node(
+                    id=f"{dataset_id}:{uid}",
+                    label=label,
+                    properties={
+                        **_resolve_property_paths(record, dataset_ctx.property_paths),
+                        **_scalar_properties(record),
+                    },
+                    source_record_id=uid,
+                    extraction_source=ExtractionSource.RULE_BASED,
+                ))
 
         # Rule 2: nested collections
         if uid:
@@ -622,23 +628,25 @@ async def extract_and_write_stream(
                     child_uid = item.get(nc.id_field)
                     if not child_uid:
                         continue
-                    await buffer.add_node(Node(
-                        id=f"{dataset_id}:{child_uid}",
-                        label=nc.child_label,
-                        properties={k: v for k, v in item.items() if not isinstance(v, (dict, list))},
-                        source_record_id=uid,
-                        extraction_source=ExtractionSource.RULE_BASED,
-                    ))
-                    pending_rels.append(Relationship(
-                        from_id=f"{dataset_id}:{uid}",
-                        to_id=f"{dataset_id}:{child_uid}",
-                        from_label=parent_label,
-                        to_label=nc.child_label,
-                        type=nc.edge_type,
-                        properties={},
-                        source_record_id=uid,
-                        extraction_source=ExtractionSource.RULE_BASED,
-                    ))
+                    if write_nodes:
+                        await buffer.add_node(Node(
+                            id=f"{dataset_id}:{child_uid}",
+                            label=nc.child_label,
+                            properties={k: v for k, v in item.items() if not isinstance(v, (dict, list))},
+                            source_record_id=uid,
+                            extraction_source=ExtractionSource.RULE_BASED,
+                        ))
+                    if write_rels:
+                        await buffer.add_rel(Relationship(
+                            from_id=f"{dataset_id}:{uid}",
+                            to_id=f"{dataset_id}:{child_uid}",
+                            from_label=parent_label,
+                            to_label=nc.child_label,
+                            type=nc.edge_type,
+                            properties={},
+                            source_record_id=uid,
+                            extraction_source=ExtractionSource.RULE_BASED,
+                        ))
 
         # Rules 3+4: hierarchy — inline when index is available
         if uid and dataset_ctx.hierarchy_config is not None:
@@ -648,10 +656,12 @@ async def extract_and_write_stream(
                 segments = [s.strip() for s in path.split(cfg.separator) if s.strip()]
                 if len(segments) >= 2:
                     if indices.name_to_node:
-                        pending_rels.extend(await _emit_hierarchy_inline(
+                        await _emit_hierarchy_inline(
                             segments, uid, dataset_id, cfg, indices.name_to_node, buffer,
                             phantom_nodes_seen,
-                        ))
+                            write_nodes=write_nodes,
+                            write_rels=write_rels,
+                        )
                     else:
                         result.path_tasks.append((uid, path, str(uid)))
 
@@ -675,13 +685,14 @@ async def extract_and_write_stream(
                 from_label, to_label = rel_label_map.get(edge_name, ("", ""))
                 partner_id = f"{dataset_id}:{partner_id_raw}"
                 from_id, to_id = (this_id, partner_id) if direction == "out" else (partner_id, this_id)
-                pending_rels.append(Relationship(
-                    from_id=from_id, to_id=to_id,
-                    from_label=from_label, to_label=to_label,
-                    type=canonical_type, properties={},
-                    source_record_id=uid,
-                    extraction_source=ExtractionSource.RULE_BASED,
-                ))
+                if write_rels:
+                    await buffer.add_rel(Relationship(
+                        from_id=from_id, to_id=to_id,
+                        from_label=from_label, to_label=to_label,
+                        type=canonical_type, properties={},
+                        source_record_id=uid,
+                        extraction_source=ExtractionSource.RULE_BASED,
+                    ))
 
         # Rule 6: implicit FKs
         for ir in dataset_ctx.implicit_relationships:
@@ -690,15 +701,16 @@ async def extract_and_write_stream(
                 continue
             this_label = type_map.get(type_name, type_name) if type_name else ""
             target_ds = ir.target_dataset_id if ir.cross_dataset else dataset_id
-            pending_rels.append(Relationship(
-                from_id=f"{dataset_id}:{uid}",
-                to_id=f"{target_ds}:{fk_value}",
-                from_label=this_label or ir.from_type,
-                to_label=ir.to_type,
-                type=ir.maps_to, properties={},
-                source_record_id=uid,
-                extraction_source=ExtractionSource.RULE_BASED,
-            ))
+            if write_rels:
+                await buffer.add_rel(Relationship(
+                    from_id=f"{dataset_id}:{uid}",
+                    to_id=f"{target_ds}:{fk_value}",
+                    from_label=this_label or ir.from_type,
+                    to_label=ir.to_type,
+                    type=ir.maps_to, properties={},
+                    source_record_id=uid,
+                    extraction_source=ExtractionSource.RULE_BASED,
+                ))
 
         # Rule 6b: path FKs
         for pfk in dataset_ctx.path_fk_relationships:
@@ -712,13 +724,14 @@ async def extract_and_write_stream(
                 if fk_value:
                     to_id = index.get(str(fk_value))
                     if to_id:
-                        pending_rels.append(Relationship(
-                            from_id=from_id, to_id=to_id,
-                            from_label=pfk.from_type or this_label, to_label=pfk.to_type,
-                            type=pfk.maps_to, properties={},
-                            source_record_id=uid,
-                            extraction_source=ExtractionSource.RULE_BASED,
-                        ))
+                        if write_rels:
+                            await buffer.add_rel(Relationship(
+                                from_id=from_id, to_id=to_id,
+                                from_label=pfk.from_type or this_label, to_label=pfk.to_type,
+                                type=pfk.maps_to, properties={},
+                                source_record_id=uid,
+                                extraction_source=ExtractionSource.RULE_BASED,
+                            ))
             else:
                 container = _get_nested(record, pfk.container_path)
                 if isinstance(container, list):
@@ -728,26 +741,24 @@ async def extract_and_write_stream(
                             if fk_value:
                                 to_id = index.get(str(fk_value))
                                 if to_id:
-                                    pending_rels.append(Relationship(
-                                        from_id=from_id, to_id=to_id,
-                                        from_label=pfk.from_type or this_label, to_label=pfk.to_type,
-                                        type=pfk.maps_to, properties={},
-                                        source_record_id=uid,
-                                        extraction_source=ExtractionSource.RULE_BASED,
-                                    ))
+                                    if write_rels:
+                                        await buffer.add_rel(Relationship(
+                                            from_id=from_id, to_id=to_id,
+                                            from_label=pfk.from_type or this_label, to_label=pfk.to_type,
+                                            type=pfk.maps_to, properties={},
+                                            source_record_id=uid,
+                                            extraction_source=ExtractionSource.RULE_BASED,
+                                        ))
 
         # Rule 7: deterministic ambiguous field relationships
-        if dataset_ctx.ambiguous_field_rules and uid:
+        if write_rels and dataset_ctx.ambiguous_field_rules and uid:
             this_label_r7 = type_map.get(type_name, type_name) if type_name else ""
-            pending_rels.extend(_apply_ambiguous_field_rules(
+            for _rel in _apply_ambiguous_field_rules(
                 record, dataset_id, uid, this_label_r7,
                 dataset_ctx.ambiguous_field_rules, indices.uid_set,
-            ))
+            ):
+                await buffer.add_rel(_rel)
 
-    await buffer.flush_all()          # flush all remaining nodes first
-
-    for rel in pending_rels:
-        await buffer.add_rel(rel)
-    await buffer.flush_all()          # flush all deferred rels (endpoints now guaranteed in Neo4j)
+    await buffer.flush_all()
 
     return result

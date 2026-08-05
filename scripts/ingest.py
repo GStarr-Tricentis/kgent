@@ -269,9 +269,9 @@ async def main() -> None:
     )
 
     # -------------------------------------------------------------------------
-    # Step 5: Streaming extract + write (Pass 3)
+    # Step 5: Streaming extract + write (Pass 3a: nodes, Pass 3b: rels)
     # -------------------------------------------------------------------------
-    _step(5, TOTAL_STEPS, "Extracting nodes and relationships...")
+    _step(5, TOTAL_STEPS, "Extracting nodes and relationships (two-pass)...")
     from graph_pipeline.extractor import extract_and_write_stream
     from graph_pipeline.neo4j_writer import WriteBuffer, WriteResult
 
@@ -284,11 +284,26 @@ async def main() -> None:
     write_result = WriteResult()
     if not args.dry_run:
         async with WriteBuffer(driver, batch_size=batch_size) as buffer:
+            _indent("Pass 3a: writing nodes...")
             await extract_and_write_stream(
                 (r for r in stream_file(file_path)
                  if str(r.get(dataset_ctx.id_field, "")) in scan.ingest_ids),
                 dataset_ctx, shared_ctx, indices, buffer,
+                write_rels=False,
             )
+            _indent(f"Pass 3a done: {buffer.result.nodes_created} nodes created, "
+                    f"{buffer.result.nodes_matched} matched")
+
+            _indent("Pass 3b: writing relationships...")
+            await extract_and_write_stream(
+                (r for r in stream_file(file_path)
+                 if str(r.get(dataset_ctx.id_field, "")) in scan.ingest_ids),
+                dataset_ctx, shared_ctx, indices, buffer,
+                write_nodes=False,
+            )
+            _indent(f"Pass 3b done: {buffer.result.relationships_created} rels created, "
+                    f"{buffer.result.relationships_matched} matched")
+
         write_result = buffer.result
 
     # -------------------------------------------------------------------------
