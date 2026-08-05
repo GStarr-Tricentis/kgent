@@ -554,6 +554,146 @@ class TestFilterAmbiguousDelimited:
         assert result == []
 
 
+class TestScanNestedCollectionCandidates:
+    def test_top_level_array_with_id_field_detected(self):
+        from graph_pipeline.schema_discovery import _scan_nested_collection_candidates
+        sample = [
+            {"uniqueId": "r1", "moduleAttributes": [{"uniqueId": "a1", "name": "x"}]},
+        ]
+        candidates = _scan_nested_collection_candidates(sample, id_field="uniqueId")
+        fields = [c["field"] for c in candidates]
+        assert "moduleAttributes" in fields
+
+    def test_nested_dict_array_with_id_field_detected_as_dot_path(self):
+        from graph_pipeline.schema_discovery import _scan_nested_collection_candidates
+        sample = [
+            {"uniqueId": "r1", "details": {"steps": [{"uniqueId": "s1", "action": "click"}]}},
+        ]
+        candidates = _scan_nested_collection_candidates(sample, id_field="uniqueId")
+        fields = [c["field"] for c in candidates]
+        assert "details.steps" in fields
+
+    def test_array_of_primitives_not_detected(self):
+        from graph_pipeline.schema_discovery import _scan_nested_collection_candidates
+        sample = [{"uniqueId": "r1", "tags": ["a", "b", "c"]}]
+        candidates = _scan_nested_collection_candidates(sample, id_field="uniqueId")
+        assert candidates == []
+
+    def test_array_of_dicts_without_id_field_not_detected(self):
+        from graph_pipeline.schema_discovery import _scan_nested_collection_candidates
+        sample = [{"uniqueId": "r1", "refs": [{"name": "x"}, {"name": "y"}]}]
+        candidates = _scan_nested_collection_candidates(sample, id_field="uniqueId")
+        assert candidates == []
+
+    def test_records_with_field_counts_records_not_items(self):
+        from graph_pipeline.schema_discovery import _scan_nested_collection_candidates
+        sample = [
+            {"uniqueId": "r1", "attrs": [{"uniqueId": "a1"}, {"uniqueId": "a2"}]},
+            {"uniqueId": "r2", "attrs": [{"uniqueId": "a3"}]},
+            {"uniqueId": "r3"},
+        ]
+        candidates = _scan_nested_collection_candidates(sample, id_field="uniqueId")
+        match = next(c for c in candidates if c["field"] == "attrs")
+        assert match["records_with_field"] == 2
+
+    def test_empty_sample_returns_empty(self):
+        from graph_pipeline.schema_discovery import _scan_nested_collection_candidates
+        assert _scan_nested_collection_candidates([], id_field="uniqueId") == []
+
+
+class TestValidateAssociationPartnerTypes:
+    _assoc_config = {
+        "array_field": "associations",
+        "edge_name_subfield": "edgeName",
+        "partner_id_subfield": "partnerUniqueId",
+    }
+
+    def _make_sample(self):
+        return [
+            {"uniqueId": "tc-1", "typeName": "TestCase",
+             "associations": [
+                 {"edgeName": "Module", "partnerUniqueId": "xm-1"},
+                 {"edgeName": "Module", "partnerUniqueId": "am-1"},
+             ]},
+            {"uniqueId": "xm-1", "typeName": "XModule"},
+            {"uniqueId": "am-1", "typeName": "ApiModule"},
+        ]
+
+    def test_heterogeneous_partners_clears_to_type(self):
+        from graph_pipeline.schema_discovery import _validate_association_partner_types
+        from graph_pipeline.context_store import DatasetRelationshipType
+        rel_types = [
+            DatasetRelationshipType(
+                name="Module", maps_to="USES_MODULE",
+                from_type="TestCase", to_type="XModule",
+            )
+        ]
+        result = _validate_association_partner_types(
+            rel_types, self._assoc_config, self._make_sample(),
+            id_field="uniqueId", type_field="typeName",
+        )
+        assert result[0].to_type == ""
+
+    def test_uniform_partners_preserves_to_type(self):
+        from graph_pipeline.schema_discovery import _validate_association_partner_types
+        from graph_pipeline.context_store import DatasetRelationshipType
+        sample = [
+            {"uniqueId": "tc-1", "typeName": "TestCase",
+             "associations": [
+                 {"edgeName": "Coverage", "partnerUniqueId": "req-1"},
+                 {"edgeName": "Coverage", "partnerUniqueId": "req-2"},
+             ]},
+            {"uniqueId": "req-1", "typeName": "Requirement"},
+            {"uniqueId": "req-2", "typeName": "Requirement"},
+        ]
+        rel_types = [
+            DatasetRelationshipType(
+                name="Coverage", maps_to="COVERS",
+                from_type="Requirement", to_type="TestCase",
+            )
+        ]
+        result = _validate_association_partner_types(
+            rel_types, self._assoc_config, sample,
+            id_field="uniqueId", type_field="typeName",
+        )
+        assert result[0].to_type == "TestCase"
+
+    def test_empty_assoc_config_returns_unchanged(self):
+        from graph_pipeline.schema_discovery import _validate_association_partner_types
+        from graph_pipeline.context_store import DatasetRelationshipType
+        rel_types = [
+            DatasetRelationshipType(
+                name="Module", maps_to="USES_MODULE",
+                from_type="TestCase", to_type="XModule",
+            )
+        ]
+        result = _validate_association_partner_types(
+            rel_types, {}, self._make_sample(),
+            id_field="uniqueId", type_field="typeName",
+        )
+        assert result[0].to_type == "XModule"
+
+    def test_partner_not_in_sample_preserves_to_type(self):
+        from graph_pipeline.schema_discovery import _validate_association_partner_types
+        from graph_pipeline.context_store import DatasetRelationshipType
+        sample = [
+            {"uniqueId": "tc-1", "typeName": "TestCase",
+             "associations": [{"edgeName": "Module", "partnerUniqueId": "xm-99"}]},
+            # xm-99 not in sample — type unknown
+        ]
+        rel_types = [
+            DatasetRelationshipType(
+                name="Module", maps_to="USES_MODULE",
+                from_type="TestCase", to_type="XModule",
+            )
+        ]
+        result = _validate_association_partner_types(
+            rel_types, self._assoc_config, sample,
+            id_field="uniqueId", type_field="typeName",
+        )
+        assert result[0].to_type == "XModule"
+
+
 class TestResolveAmbiguousFieldRules:
     def _make_backend(self, content: str):
         class _MockResponse:

@@ -59,11 +59,23 @@ def generate_node_merge_batch(label: str) -> str:
 
 
 def generate_relationship_merge_batch(from_label: str, to_label: str, rel_type: str) -> str:
-    """UNWIND template for a homogeneous batch of relationships with the same type triple."""
+    """UNWIND template for a homogeneous batch of relationships with the same type triple.
+
+    Falls back to labelless MATCH if from_label or to_label is empty — correct when
+    the endpoint label spans multiple concrete types (e.g. XModule + ApiModule).
+    Labelless MATCH performs a full node scan; prefer a non-empty label when the
+    target type is known.
+    """
+    from_match = (
+        f"(a:{from_label} {{id: row.from_id}})" if from_label else "(a {id: row.from_id})"
+    )
+    to_match = (
+        f"(b:{to_label} {{id: row.to_id}})" if to_label else "(b {id: row.to_id})"
+    )
     return (
         f"UNWIND $rows AS row\n"
-        f"MATCH (a:{from_label} {{id: row.from_id}})\n"
-        f"MATCH (b:{to_label} {{id: row.to_id}})\n"
+        f"MATCH {from_match}\n"
+        f"MATCH {to_match}\n"
         f"MERGE (a)-[r:{rel_type}]->(b)\n"
         f"SET r.extraction_source = row.extraction_source"
     )

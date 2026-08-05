@@ -323,6 +323,21 @@ def test_generate_relationship_merge_batch_no_ingested_at():
     assert "ingested_at" not in cypher
 
 
+def test_generate_relationship_merge_batch_empty_to_label_uses_labelless_match():
+    from graph_pipeline.cypher_generator import generate_relationship_merge_batch
+    cypher = generate_relationship_merge_batch("TestCase", "", "USES_MODULE")
+    assert "MATCH (a:TestCase {id: row.from_id})" in cypher
+    assert "MATCH (b {id: row.to_id})" in cypher
+    assert "b: {" not in cypher  # no malformed "b: {" fragment
+
+
+def test_generate_relationship_merge_batch_empty_from_label_uses_labelless_match():
+    from graph_pipeline.cypher_generator import generate_relationship_merge_batch
+    cypher = generate_relationship_merge_batch("", "XModule", "USES_MODULE")
+    assert "MATCH (a {id: row.from_id})" in cypher
+    assert "MATCH (b:XModule {id: row.to_id})" in cypher
+
+
 def test_generate_node_merge_batch_label_is_interpolated():
     from graph_pipeline.cypher_generator import generate_node_merge_batch
     assert "XModule" in generate_node_merge_batch("XModule")
