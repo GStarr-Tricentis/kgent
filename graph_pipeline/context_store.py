@@ -117,6 +117,15 @@ class HierarchyConfig(BaseModel):
     edge_type: str = "CONTAINS"
 
 
+class AmbiguousFieldRule(BaseModel):
+    field: str
+    delimiter: str      # character to split field value on; "" means whole-value (no split)
+    rel_type: str       # canonical rel type — must match a relationship_types maps_to value
+    from_type: str = "" # from node label; "" = use the record's own label at runtime
+    to_type: str        # to node label
+    direction: str = "out"  # "out" = this record → matched node, "in" = matched node → this record
+
+
 class DatasetContext(BaseModel):
     dataset_id: str
     source_file: str = ""
@@ -132,6 +141,7 @@ class DatasetContext(BaseModel):
     hierarchy_config: HierarchyConfig | None = None
     design_decisions: list[DesignDecision] = Field(default_factory=list)
     ambiguous_fields: list[str] = Field(default_factory=list)
+    ambiguous_field_rules: list[AmbiguousFieldRule] = Field(default_factory=list)
     property_paths: list[str] = Field(default_factory=list)
     source_fingerprint: str = ""
     schema_version: int = 0

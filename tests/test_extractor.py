@@ -18,6 +18,7 @@ def make_dataset_ctx(
     implicit_relationships=None,
     design_decisions=None,
     ambiguous_fields=None,
+    ambiguous_field_rules=None,
     hierarchy_config=...,   # sentinel: default to Tosca-compatible HierarchyConfig
     association_config=..., # sentinel: default to Tosca-compatible AssociationConfig
     nested_collections=None,
@@ -25,6 +26,7 @@ def make_dataset_ctx(
     path_fk_relationships=None,
 ):
     from graph_pipeline.context_store import (
+        AmbiguousFieldRule,
         AssociationConfig,
         DatasetContext,
         DatasetNodeType,
@@ -72,6 +74,10 @@ def make_dataset_ctx(
     for pfk in (path_fk_relationships or []):
         pfk_objs.append(PathFKRelationship(**pfk))
 
+    afr_objs = []
+    for afr in (ambiguous_field_rules or []):
+        afr_objs.append(AmbiguousFieldRule(**afr))
+
     return DatasetContext(
         dataset_id=dataset_id,
         node_types=nt_objs,
@@ -79,6 +85,7 @@ def make_dataset_ctx(
         implicit_relationships=ir_objs,
         design_decisions=dd_objs,
         ambiguous_fields=ambiguous_fields or [],
+        ambiguous_field_rules=afr_objs,
         hierarchy_config=hierarchy_config,
         association_config=association_config,
         nested_collections=nc_objs,
@@ -687,194 +694,156 @@ class TestRule6ImplicitFKs:
 # Rule 7 — LLM-inferred extraction (integration, requires --llm)
 # ---------------------------------------------------------------------------
 
-class MockBackend:
-    """Minimal ModelBackend for unit tests."""
+class TestApplyAmbiguousFieldRules:
+    """Unit tests for _apply_ambiguous_field_rules."""
 
-    def __init__(self, response_content: str):
-        self._content = response_content
-
-    async def complete(self, messages, tools, response_format=None):
-        from kgent.agent.types import ModelResponse
-        return ModelResponse(
-            content=self._content,
-            tool_calls=[],
-            finish_reason="stop",
-            assistant_message={"role": "assistant", "content": self._content},
-            raw=None,
+    def _rule(self, field="refs", delimiter=",", rel_type="LINKS_TO",
+               from_type="", to_type="Item", direction="out"):
+        from graph_pipeline.context_store import AmbiguousFieldRule
+        return AmbiguousFieldRule(
+            field=field, delimiter=delimiter, rel_type=rel_type,
+            from_type=from_type, to_type=to_type, direction=direction,
         )
 
+    def test_delimited_tokens_matching_uid_set_produce_rels(self):
+        from graph_pipeline.extractor import _apply_ambiguous_field_rules
+        record = {"uniqueId": "tc-1", "typeName": "TestCase", "refs": "tc-2,tc-3,tc-99"}
+        uid_set = {"tc-1", "tc-2", "tc-3"}
+        rels = _apply_ambiguous_field_rules(
+            record, "ds", "tc-1", "TestCase", [self._rule()], uid_set
+        )
+        assert len(rels) == 2
+        to_ids = {r.to_id for r in rels}
+        assert to_ids == {"ds:tc-2", "ds:tc-3"}
 
-class TestRule7LlmExtraction:
-    async def test_llm_nodes_marked_llm_inferred(self):
-        """MockBackend returning valid JSON produces LLM_INFERRED nodes."""
-        import json
+    def test_token_not_in_uid_set_is_skipped(self):
+        from graph_pipeline.extractor import _apply_ambiguous_field_rules
+        record = {"uniqueId": "tc-1", "typeName": "TestCase", "refs": "tc-2,unknown-99"}
+        uid_set = {"tc-1", "tc-2"}
+        rels = _apply_ambiguous_field_rules(
+            record, "ds", "tc-1", "TestCase", [self._rule()], uid_set
+        )
+        assert len(rels) == 1
+        assert rels[0].to_id == "ds:tc-2"
+
+    def test_whole_value_match_when_delimiter_empty(self):
+        from graph_pipeline.extractor import _apply_ambiguous_field_rules
+        record = {"uniqueId": "tc-1", "typeName": "TestCase", "refs": "tc-2"}
+        uid_set = {"tc-1", "tc-2"}
+        rels = _apply_ambiguous_field_rules(
+            record, "ds", "tc-1", "TestCase", [self._rule(delimiter="")], uid_set
+        )
+        assert len(rels) == 1
+        assert rels[0].to_id == "ds:tc-2"
+
+    def test_direction_in_reverses_from_to(self):
+        from graph_pipeline.extractor import _apply_ambiguous_field_rules
+        record = {"uniqueId": "tc-1", "typeName": "TestCase", "refs": "tc-2"}
+        uid_set = {"tc-1", "tc-2"}
+        rels = _apply_ambiguous_field_rules(
+            record, "ds", "tc-1", "TestCase",
+            [self._rule(direction="in")], uid_set,
+        )
+        assert len(rels) == 1
+        assert rels[0].from_id == "ds:tc-2"
+        assert rels[0].to_id == "ds:tc-1"
+
+    def test_from_type_empty_uses_this_label(self):
+        from graph_pipeline.extractor import _apply_ambiguous_field_rules
+        record = {"uniqueId": "tc-1", "typeName": "TestCase", "refs": "tc-2"}
+        uid_set = {"tc-1", "tc-2"}
+        rels = _apply_ambiguous_field_rules(
+            record, "ds", "tc-1", "MyLabel", [self._rule(from_type="")], uid_set
+        )
+        assert rels[0].from_label == "MyLabel"
+
+    def test_from_type_set_overrides_this_label(self):
+        from graph_pipeline.extractor import _apply_ambiguous_field_rules
+        record = {"uniqueId": "tc-1", "typeName": "TestCase", "refs": "tc-2"}
+        uid_set = {"tc-1", "tc-2"}
+        rels = _apply_ambiguous_field_rules(
+            record, "ds", "tc-1", "MyLabel", [self._rule(from_type="Override")], uid_set
+        )
+        assert rels[0].from_label == "Override"
+
+    def test_missing_field_skipped(self):
+        from graph_pipeline.extractor import _apply_ambiguous_field_rules
+        record = {"uniqueId": "tc-1", "typeName": "TestCase"}
+        uid_set = {"tc-1", "tc-2"}
+        rels = _apply_ambiguous_field_rules(
+            record, "ds", "tc-1", "TestCase", [self._rule()], uid_set
+        )
+        assert rels == []
+
+    def test_empty_uid_set_produces_no_rels(self):
+        from graph_pipeline.extractor import _apply_ambiguous_field_rules
+        record = {"uniqueId": "tc-1", "typeName": "TestCase", "refs": "tc-2,tc-3"}
+        rels = _apply_ambiguous_field_rules(
+            record, "ds", "tc-1", "TestCase", [self._rule()], set()
+        )
+        assert rels == []
+
+    def test_comma_delimited_field(self):
+        from graph_pipeline.context_store import AmbiguousFieldRule
+        from graph_pipeline.extractor import _apply_ambiguous_field_rules
+        rule = AmbiguousFieldRule(
+            field="relatedIds", delimiter=",", rel_type="COVERS",
+            from_type="", to_type="Requirement", direction="out",
+        )
+        record = {"uniqueId": "tc1", "relatedIds": "req1,req2,unknown"}
+        uid_set = {"req1", "req2"}
+        rels = _apply_ambiguous_field_rules(record, "ds", "tc1", "TestCase", [rule], uid_set)
+        assert len(rels) == 2
+        assert all(r.from_id == "ds:tc1" for r in rels)
+        assert {r.to_id for r in rels} == {"ds:req1", "ds:req2"}
+        assert all(r.type == "COVERS" for r in rels)
+        assert not any(r.to_id == "ds:unknown" for r in rels)
+
+
+class TestRule7DeterministicExtraction:
+    """Rule 7 via extract_all using ambiguous_field_rules (no LLM)."""
+
+    def _ctx(self):
+        return make_dataset_ctx(
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
+            relationship_types=[{
+                "name": "LINKS_TO", "maps_to": "LINKS_TO",
+                "from_type": "TestCase", "to_type": "TestCase",
+            }],
+            ambiguous_field_rules=[{
+                "field": "refs", "delimiter": ",", "rel_type": "LINKS_TO",
+                "from_type": "", "to_type": "TestCase", "direction": "out",
+            }],
+            hierarchy_config=None,
+            association_config=None,
+        )
+
+    async def test_matching_tokens_produce_rels(self):
         from graph_pipeline.extractor import extract_all
-        from graph_pipeline.models import ExtractionSource
+        records = [
+            {"uniqueId": "tc-1", "typeName": "TestCase", "refs": "tc-2,tc-3"},
+            {"uniqueId": "tc-2", "typeName": "TestCase"},
+            {"uniqueId": "tc-3", "typeName": "TestCase"},
+        ]
+        _, rels = await extract_all(records, self._ctx(), make_shared_ctx())
+        rule_rels = [r for r in rels if r.type == "LINKS_TO"]
+        assert len(rule_rels) == 2
+        to_ids = {r.to_id for r in rule_rels}
+        assert to_ids == {"ds1:tc-2", "ds1:tc-3"}
 
-        llm_response = json.dumps([
-            {
-                "source_record_id": "tc-001",
-                "nodes": [
-                    {"id": "ds1:cat-functional", "label": "Category",
-                     "properties": {"name": "functional"}, "source_record_id": "tc-001"}
-                ],
-                "relationships": [],
-            }
-        ])
+    async def test_no_rules_produces_no_extra_rels(self):
+        from graph_pipeline.extractor import extract_all
         ctx = make_dataset_ctx(
-            node_types=[
-                {"name": "TestCase", "maps_to": "TestCase"},
-                {"name": "Category", "maps_to": "Category"},
-            ],
-            ambiguous_fields=["category"],
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
             hierarchy_config=None,
             association_config=None,
         )
         records = [
-            {
-                "uniqueId": "tc-001",
-                "typeName": "TestCase",
-                "name": "Login",
-                "category": "functional|regression",
-            }
+            {"uniqueId": "tc-1", "typeName": "TestCase", "refs": "tc-2"},
+            {"uniqueId": "tc-2", "typeName": "TestCase"},
         ]
-        nodes, _ = await extract_all(records, ctx, make_shared_ctx(), backend=MockBackend(llm_response))
-        inferred = [n for n in nodes if n.extraction_source == ExtractionSource.LLM_INFERRED]
-        assert len(inferred) == 1
-        assert inferred[0].id == "ds1:cat-functional"
-
-    async def test_no_llm_call_when_backend_none(self):
-        """When backend is None, ambiguous_fields are silently skipped."""
-        from graph_pipeline.extractor import extract_all
-        from graph_pipeline.models import ExtractionSource
-
-        ctx = make_dataset_ctx(
-            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
-            ambiguous_fields=["category"],
-            hierarchy_config=None,
-            association_config=None,
-        )
-        records = [
-            {
-                "uniqueId": "tc-001",
-                "typeName": "TestCase",
-                "name": "Login",
-                "category": "functional",
-            }
-        ]
-        nodes, _ = await extract_all(records, ctx, make_shared_ctx(), backend=None)
-        inferred = [n for n in nodes if n.extraction_source == ExtractionSource.LLM_INFERRED]
-        assert len(inferred) == 0
-
-    async def test_node_with_unknown_label_filtered(self):
-        """A node whose label is not in node_types is dropped; valid nodes pass through."""
-        import json
-        from graph_pipeline.extractor import extract_all
-        from graph_pipeline.models import ExtractionSource
-
-        llm_response = json.dumps([
-            {
-                "source_record_id": "tc-001",
-                "nodes": [
-                    {"id": "ds1:phantom-1", "label": "Phantom",
-                     "properties": {}, "source_record_id": "tc-001"},
-                    {"id": "ds1:cat-real", "label": "Category",
-                     "properties": {"name": "functional"}, "source_record_id": "tc-001"},
-                ],
-                "relationships": [],
-            }
-        ])
-        ctx = make_dataset_ctx(
-            node_types=[
-                {"name": "TestCase", "maps_to": "TestCase"},
-                {"name": "Category", "maps_to": "Category"},
-            ],
-            ambiguous_fields=["category"],
-            hierarchy_config=None,
-            association_config=None,
-        )
-        records = [{"uniqueId": "tc-001", "typeName": "TestCase", "category": "functional"}]
-        nodes, _ = await extract_all(records, ctx, make_shared_ctx(), backend=MockBackend(llm_response))
-        inferred = [n for n in nodes if n.extraction_source == ExtractionSource.LLM_INFERRED]
-        labels = {n.label for n in inferred}
-        assert "Phantom" not in labels
-        assert "Category" in labels
-
-    async def test_rel_with_unknown_type_filtered(self):
-        """A relationship whose type is not in relationship_types is dropped; valid rels pass through."""
-        import json
-        from graph_pipeline.extractor import extract_all
-        from graph_pipeline.models import ExtractionSource
-
-        llm_response = json.dumps([
-            {
-                "source_record_id": "tc-001",
-                "nodes": [],
-                "relationships": [
-                    {
-                        "from_id": "ds1:tc-001", "to_id": "ds1:cat-1",
-                        "from_label": "TestCase", "to_label": "Category",
-                        "type": "MADE_UP", "properties": {}, "source_record_id": "tc-001",
-                    },
-                    {
-                        "from_id": "ds1:tc-001", "to_id": "ds1:cat-1",
-                        "from_label": "TestCase", "to_label": "Category",
-                        "type": "HAS_CATEGORY", "properties": {}, "source_record_id": "tc-001",
-                    },
-                ],
-            }
-        ])
-        ctx = make_dataset_ctx(
-            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
-            relationship_types=[{"name": "HAS_CATEGORY", "maps_to": "HAS_CATEGORY"}],
-            ambiguous_fields=["category"],
-            hierarchy_config=None,
-            association_config=None,
-        )
-        records = [{"uniqueId": "tc-001", "typeName": "TestCase", "category": "functional"}]
-        _, rels = await extract_all(records, ctx, make_shared_ctx(), backend=MockBackend(llm_response))
-        inferred = [r for r in rels if r.extraction_source == ExtractionSource.LLM_INFERRED]
-        types = {r.type for r in inferred}
-        assert "MADE_UP" not in types
-        assert "HAS_CATEGORY" in types
-
-    async def test_known_types_passed_to_prompt(self):
-        """known_node_labels_json and known_rel_types_json appear in the rendered prompt."""
-        import json
-        from graph_pipeline.extractor import _llm_extract_batch
-
-        class CapturingBackend:
-            def __init__(self):
-                self.last_prompt = ""
-            async def complete(self, messages, tools, response_format=None):
-                from kgent.agent.types import ModelResponse
-                self.last_prompt = messages[0]["content"]
-                return ModelResponse(
-                    content="[]", tool_calls=[], finish_reason="stop",
-                    assistant_message={"role": "assistant", "content": "[]"}, raw=None,
-                )
-
-        ctx = make_dataset_ctx(
-            node_types=[
-                {"name": "TestCase", "maps_to": "TestCase"},
-                {"name": "Category", "maps_to": "Category"},
-            ],
-            relationship_types=[{"name": "HAS_CATEGORY", "maps_to": "HAS_CATEGORY"}],
-            ambiguous_fields=["category"],
-            hierarchy_config=None,
-            association_config=None,
-        )
-        type_map = {"TestCase": "TestCase"}
-        backend = CapturingBackend()
-        records = [{"uniqueId": "tc-001", "typeName": "TestCase", "category": "functional"}]
-        await _llm_extract_batch(records, ctx, type_map, backend)
-        prompt = backend.last_prompt
-        assert "KNOWN NODE LABELS" in prompt
-        assert "KNOWN RELATIONSHIP TYPES" in prompt
-        node_labels = json.loads(prompt.split("KNOWN NODE LABELS")[1].split("\n")[1].strip().split("\n")[0])
-        assert isinstance(node_labels, list) and len(node_labels) > 0
-        rel_types = json.loads(prompt.split("KNOWN RELATIONSHIP TYPES")[1].split("\n")[1].strip().split("\n")[0])
-        assert isinstance(rel_types, list) and len(rel_types) > 0
+        _, rels = await extract_all(records, ctx, make_shared_ctx())
+        assert rels == []
 
 
 
@@ -1067,274 +1036,45 @@ class TestExtractionSourceLabels:
 
 
 # ---------------------------------------------------------------------------
-# _llm_extract_batch — unit tests for the single-batch helper
+# build_extraction_indices — uid_set population
 # ---------------------------------------------------------------------------
 
-class TestLlmExtractBatch:
-    """Tests for _llm_extract_batch — the function that handles one batch of records."""
-
-    def _ctx(self, ambiguous_fields=None):
-        return make_dataset_ctx(
-            node_types=[
-                {"name": "TestCase", "maps_to": "TestCase"},
-                {"name": "Category", "maps_to": "Category"},
-            ],
-            relationship_types=[{"name": "HAS_CATEGORY", "maps_to": "HAS_CATEGORY"}],
-            ambiguous_fields=ambiguous_fields or ["category"],
+class TestBuildExtractionIndicesUidSet:
+    async def test_uid_set_populated_with_raw_uids(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = make_dataset_ctx(
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
             hierarchy_config=None,
             association_config=None,
         )
+        records = [
+            {"uniqueId": "tc-1", "typeName": "TestCase"},
+            {"uniqueId": "tc-2", "typeName": "TestCase"},
+            {"uniqueId": "tc-3", "typeName": "TestCase"},
+        ]
+        indices = build_extraction_indices(iter(records), ctx)
+        assert indices.uid_set == {"tc-1", "tc-2", "tc-3"}
 
-    def _type_map(self):
-        return {"TestCase": "TestCase"}
-
-    def _batch_response(self, source_id, nodes, rels=None):
-        """Build a valid batch-format JSON string for MockBackend."""
-        import json as _json
-        return _json.dumps([
-            {"source_record_id": source_id, "nodes": nodes, "relationships": rels or []}
-        ])
-
-    async def test_returns_nodes_from_batch_response(self):
-        from graph_pipeline.extractor import _llm_extract_batch
-        from graph_pipeline.models import ExtractionSource
-
-        record = {"uniqueId": "tc-001", "typeName": "TestCase", "category": "functional"}
-        response = self._batch_response(
-            "tc-001",
-            [{"id": "ds1:cat-functional", "label": "Category",
-              "properties": {}, "source_record_id": "tc-001"}],
-        )
-        nodes, _ = await _llm_extract_batch(
-            [record], self._ctx(), self._type_map(), MockBackend(response)
-        )
-        assert len(nodes) == 1
-        assert nodes[0].id == "ds1:cat-functional"
-        assert nodes[0].extraction_source == ExtractionSource.LLM_INFERRED
-
-    async def test_returns_relationships_from_batch_response(self):
-        from graph_pipeline.extractor import _llm_extract_batch
-        from graph_pipeline.models import ExtractionSource
-
-        record = {"uniqueId": "tc-001", "typeName": "TestCase", "category": "functional"}
-        response = self._batch_response(
-            "tc-001",
-            [],
-            [{"from_id": "ds1:tc-001", "to_id": "ds1:cat-fn", "from_label": "TestCase",
-              "to_label": "Category", "type": "HAS_CATEGORY",
-              "properties": {}, "source_record_id": "tc-001"}],
-        )
-        _, rels = await _llm_extract_batch(
-            [record], self._ctx(), self._type_map(), MockBackend(response)
-        )
-        assert len(rels) == 1
-        assert rels[0].type == "HAS_CATEGORY"
-        assert rels[0].extraction_source == ExtractionSource.LLM_INFERRED
-
-    async def test_llm_failure_returns_empty(self):
-        """A backend that raises is caught; empty lists are returned."""
-        from graph_pipeline.extractor import _llm_extract_batch
-
-        class FailingBackend:
-            async def complete(self, messages, tools, response_format=None):
-                raise RuntimeError("simulated LLM error")
-
-        record = {"uniqueId": "tc-001", "typeName": "TestCase", "category": "x"}
-        nodes, rels = await _llm_extract_batch(
-            [record], self._ctx(), self._type_map(), FailingBackend()
-        )
-        assert nodes == []
-        assert rels == []
-
-    async def test_non_list_response_returns_empty(self):
-        """A backend returning a JSON object (not array) is handled gracefully."""
-        import json as _json
-        from graph_pipeline.extractor import _llm_extract_batch
-
-        bad_response = _json.dumps({"nodes": [], "relationships": []})
-        record = {"uniqueId": "tc-001", "typeName": "TestCase", "category": "x"}
-        nodes, rels = await _llm_extract_batch(
-            [record], self._ctx(), self._type_map(), MockBackend(bad_response)
-        )
-        assert nodes == []
-        assert rels == []
-
-    async def test_malformed_node_skipped_others_returned(self):
-        """An item missing a required node field is skipped; valid items are still returned."""
-        import json as _json
-        from graph_pipeline.extractor import _llm_extract_batch
-
-        response = _json.dumps([
-            {
-                "source_record_id": "tc-001",
-                "nodes": [
-                    # missing required "id" field — will raise when constructing Node
-                    {"label": "BadNode", "properties": {}, "source_record_id": "tc-001"},
-                    # valid node
-                    {"id": "ds1:cat-ok", "label": "Category",
-                     "properties": {}, "source_record_id": "tc-001"},
-                ],
-                "relationships": [],
-            }
-        ])
-        record = {"uniqueId": "tc-001", "typeName": "TestCase", "category": "x"}
-        nodes, _ = await _llm_extract_batch(
-            [record], self._ctx(), self._type_map(), MockBackend(response)
-        )
-        assert len(nodes) == 1
-        assert nodes[0].id == "ds1:cat-ok"
-
-
-# ---------------------------------------------------------------------------
-# _llm_extract_ambiguous — unit tests for the batching orchestrator
-# ---------------------------------------------------------------------------
-
-class TestLlmExtractAmbiguous:
-    """Tests for _llm_extract_ambiguous — the orchestrator that batches and gathers."""
-
-    def _ctx(self, ambiguous_fields=None):
-        return make_dataset_ctx(
-            node_types=[
-                {"name": "TestCase", "maps_to": "TestCase"},
-                {"name": "Category", "maps_to": "Category"},
-            ],
-            ambiguous_fields=ambiguous_fields or ["category"],
+    async def test_record_missing_uid_not_added(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = make_dataset_ctx(
+            node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
             hierarchy_config=None,
             association_config=None,
         )
-
-    def _type_map(self):
-        return {"TestCase": "TestCase"}
-
-    async def test_batching_reduces_llm_calls(self):
-        """12 eligible records with batch_size=5 → 3 LLM calls, not 12."""
-        import json as _json
-        from graph_pipeline.extractor import _llm_extract_ambiguous
-
-        class CountingBackend:
-            def __init__(self):
-                self.call_count = 0
-
-            async def complete(self, messages, tools, response_format=None):
-                from kgent.agent.types import ModelResponse
-                self.call_count += 1
-                content = _json.dumps([])
-                return ModelResponse(
-                    content=content, tool_calls=[], finish_reason="stop",
-                    assistant_message={"role": "assistant", "content": content}, raw=None,
-                )
-
         records = [
-            {"uniqueId": f"tc-{i:03d}", "typeName": "TestCase", "category": "x"}
-            for i in range(12)
+            {"uniqueId": "tc-1", "typeName": "TestCase"},
+            {"typeName": "TestCase"},  # no uniqueId
         ]
-        backend = CountingBackend()
-        await _llm_extract_ambiguous(
-            records, self._ctx(), self._type_map(), backend, batch_size=5
-        )
-        assert backend.call_count == 3  # ceil(12 / 5) = 3
+        indices = build_extraction_indices(iter(records), ctx)
+        assert indices.uid_set == {"tc-1"}
 
-    async def test_records_without_ambiguous_field_excluded(self):
-        """Records not containing any ambiguous field are excluded before batching."""
-        import json as _json
-        from graph_pipeline.extractor import _llm_extract_ambiguous
 
-        class CountingBackend:
-            def __init__(self):
-                self.call_count = 0
+# (TestLlmExtractBatch and TestLlmExtractAmbiguous removed — Rule 7 is now deterministic)
 
-            async def complete(self, messages, tools, response_format=None):
-                from kgent.agent.types import ModelResponse
-                self.call_count += 1
-                content = _json.dumps([])
-                return ModelResponse(
-                    content=content, tool_calls=[], finish_reason="stop",
-                    assistant_message={"role": "assistant", "content": content}, raw=None,
-                )
-
-        records = [
-            # 3 records WITH the ambiguous field
-            {"uniqueId": "tc-001", "typeName": "TestCase", "category": "x"},
-            {"uniqueId": "tc-002", "typeName": "TestCase", "category": "y"},
-            {"uniqueId": "tc-003", "typeName": "TestCase", "category": "z"},
-            # 2 records WITHOUT (no LLM call expected for these)
-            {"uniqueId": "tc-004", "typeName": "TestCase", "name": "no category"},
-            {"uniqueId": "tc-005", "typeName": "TestCase"},
-        ]
-        backend = CountingBackend()
-        await _llm_extract_ambiguous(
-            records, self._ctx(), self._type_map(), backend, batch_size=10
-        )
-        # All 3 eligible records fit in one batch → exactly 1 LLM call
-        assert backend.call_count == 1
-
-    async def test_failed_batch_does_not_prevent_other_batches(self):
-        """When one batch raises, the other batches' results are still returned."""
-        import json as _json
-        from graph_pipeline.extractor import _llm_extract_ambiguous
-
-        call_count = {"n": 0}
-
-        class PartiallyFailingBackend:
-            async def complete(self, messages, tools, response_format=None):
-                from kgent.agent.types import ModelResponse
-                call_count["n"] += 1
-                if call_count["n"] == 1:
-                    raise RuntimeError("first batch failed")
-                # Second batch returns one node
-                content = _json.dumps([
-                    {"source_record_id": "tc-011",
-                     "nodes": [{"id": "ds1:cat-ok", "label": "Category",
-                                "properties": {}, "source_record_id": "tc-011"}],
-                     "relationships": []}
-                ])
-                return ModelResponse(
-                    content=content, tool_calls=[], finish_reason="stop",
-                    assistant_message={"role": "assistant", "content": content}, raw=None,
-                )
-
-        records = [
-            {"uniqueId": f"tc-{i:03d}", "typeName": "TestCase", "category": "x"}
-            for i in range(20)
-        ]
-        nodes, _ = await _llm_extract_ambiguous(
-            records, self._ctx(), self._type_map(), PartiallyFailingBackend(), batch_size=10
-        )
-        # Second batch succeeded and produced one node
-        assert any(n.id == "ds1:cat-ok" for n in nodes)
-
-    async def test_max_concurrency_limits_simultaneous_calls(self):
-        """Never more than max_concurrency batches in flight at once."""
-        import asyncio
-        import json as _json
-        from graph_pipeline.extractor import _llm_extract_ambiguous
-
-        in_flight = {"current": 0, "peak": 0}
-
-        class TrackingBackend:
-            async def complete(self, messages, tools, response_format=None):
-                from kgent.agent.types import ModelResponse
-                in_flight["current"] += 1
-                in_flight["peak"] = max(in_flight["peak"], in_flight["current"])
-                await asyncio.sleep(0)
-                in_flight["current"] -= 1
-                content = _json.dumps([])
-                return ModelResponse(
-                    content=content, tool_calls=[], finish_reason="stop",
-                    assistant_message={"role": "assistant", "content": content},
-                    raw=None,
-                )
-
-        records = [
-            {"uniqueId": f"tc-{i:03d}", "typeName": "TestCase", "category": "x"}
-            for i in range(50)
-        ]
-        await _llm_extract_ambiguous(
-            records, self._ctx(), self._type_map(),
-            TrackingBackend(), batch_size=1, max_concurrency=5,
-        )
-        assert in_flight["peak"] <= 5
-
+# ---------------------------------------------------------------------------
+# property_paths — flat nested dict merging into node properties
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # property_paths — flat nested dict merging into node properties
@@ -1535,6 +1275,21 @@ class TestBuildExtractionIndices:
         assert indices.name_to_node["Login"] == ("ds1:tc-1", "TestCase")
         assert "Logout" in indices.name_to_node
         assert indices.name_to_node["Logout"] == ("ds1:tc-2", "TestCase")
+
+    def test_uid_set_populated(self):
+        from graph_pipeline.extractor import build_extraction_indices
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[{"name": "Item", "maps_to": "Item"}],
+            hierarchy_config=None,
+            association_config=None,
+        )
+        records = [
+            {"uniqueId": "r1", "typeName": "Item"},
+            {"uniqueId": "r2", "typeName": "Item"},
+        ]
+        indices = build_extraction_indices(iter(records), ctx)
+        assert indices.uid_set == {"r1", "r2"}
 
     def test_path_value_index_populated(self):
         from graph_pipeline.extractor import build_extraction_indices
@@ -1743,21 +1498,35 @@ class TestExtractAndWriteStream:
         phantom_ids = [n.id for n in buf.nodes if n.extraction_source == ExtractionSource.PHANTOM]
         assert phantom_ids.count("ds1:path:Root") == 1
 
-    async def test_stream_llm_buffer_populated_for_ambiguous_records(self):
-        from graph_pipeline.extractor import ExtractionIndices, extract_and_write_stream
+    async def test_stream_rule7_deterministic_rels_added_to_pending(self):
+        from graph_pipeline.extractor import ExtractionIndices, build_extraction_indices, extract_and_write_stream
         ctx = make_dataset_ctx(
             dataset_id="ds1",
             node_types=[{"name": "TestCase", "maps_to": "TestCase"}],
-            ambiguous_fields=["description"],
+            relationship_types=[{
+                "name": "LINKS_TO", "maps_to": "LINKS_TO",
+                "from_type": "TestCase", "to_type": "TestCase",
+            }],
+            ambiguous_field_rules=[{
+                "field": "refs", "delimiter": ",", "rel_type": "LINKS_TO",
+                "from_type": "", "to_type": "TestCase", "direction": "out",
+            }],
+            hierarchy_config=None,
+            association_config=None,
         )
         records = [
-            {"uniqueId": "tc-1", "typeName": "TestCase", "name": "A", "description": "some text"},
-            {"uniqueId": "tc-2", "typeName": "TestCase", "name": "B"},
+            {"uniqueId": "tc-1", "typeName": "TestCase", "refs": "tc-2,tc-3"},
+            {"uniqueId": "tc-2", "typeName": "TestCase"},
+            {"uniqueId": "tc-3", "typeName": "TestCase"},
         ]
         buf = _FakeWriteBuffer()
-        result = await extract_and_write_stream(iter(records), ctx, None, ExtractionIndices(), buf)
-        assert len(result.llm_buffer) == 1
-        assert result.llm_buffer[0]["uniqueId"] == "tc-1"
+        indices = build_extraction_indices(iter(records), ctx)
+        result = await extract_and_write_stream(iter(records), ctx, None, indices, buf)
+        rule_rels = [r for r in buf.rels if r.type == "LINKS_TO"]
+        assert len(rule_rels) == 2
+        to_ids = {r.to_id for r in rule_rels}
+        assert to_ids == {"ds1:tc-2", "ds1:tc-3"}
+        assert not hasattr(result, "llm_buffer")
 
     async def test_stream_flush_all_called_at_end_of_extraction(self):
         from graph_pipeline.extractor import ExtractionIndices, extract_and_write_stream
