@@ -9,6 +9,7 @@ import yaml
 
 from kgent.agent.types import ModelBackend
 from graph_pipeline.context_store import (
+    AmbiguousFieldRule,
     AssociationConfig,
     DatasetContext,
     DatasetNodeType,
@@ -26,13 +27,16 @@ logger = logging.getLogger(__name__)
 _NODES_PROMPT_PATH = Path(__file__).parent / "prompts" / "schema_proposal_nodes.txt"
 _RELS_PROMPT_PATH = Path(__file__).parent / "prompts" / "schema_proposal_relationships.txt"
 _AMBIGUOUS_PROMPT_PATH = Path(__file__).parent / "prompts" / "schema_proposal_ambiguous.txt"
+_AMBIGUOUS_RULES_PROMPT_PATH = Path(__file__).parent / "prompts" / "schema_proposal_ambiguous_rules.txt"
 
 _SCHEMAS_DIR = Path(__file__).parent / "schemas"
 _NODE_TYPES_FORMAT = json.loads((_SCHEMAS_DIR / "node_types.json").read_text())
 _REL_TYPES_FORMAT = json.loads((_SCHEMAS_DIR / "relationship_types.json").read_text())
 _AMBIGUOUS_FORMAT = json.loads((_SCHEMAS_DIR / "ambiguous_fields.json").read_text())
+_AMBIGUOUS_RULES_FORMAT = json.loads((_SCHEMAS_DIR / "ambiguous_field_rules.json").read_text())
 
 _SHARED_CONTEXT_CHAR_BUDGET = 6_000 * 4  # ~6K tokens before switching to condensed form
+_CANDIDATE_DELIMITERS = [",", "|", ";", " "]
 
 
 def _richness(r: dict) -> int:
@@ -74,12 +78,12 @@ def _filter_ambiguous_by_uid_coverage(
     sample: list[dict],
     id_field: str,
     threshold: float = 0.50,
-) -> list[str]:
+) -> list[tuple[str, str]]:
     uid_set = {str(r[id_field]) for r in sample if r.get(id_field) is not None}
     if not uid_set:
-        return fields
+        return [(f, "") for f in fields]
 
-    kept = []
+    kept: list[tuple[str, str]] = []
     for field in fields:
         values = [
             str(r[field])
@@ -90,13 +94,36 @@ def _filter_ambiguous_by_uid_coverage(
         if not values:
             logger.debug("ambiguous_fields filter: dropping '%s' (no values)", field)
             continue
+
+        # Try whole-value match first
         match_rate = sum(1 for v in values if v in uid_set) / len(values)
         if match_rate >= threshold:
-            kept.append(field)
+            kept.append((field, ""))
+            continue
+
+        # Try splitting on each candidate delimiter
+        best_delim = ""
+        best_rate = match_rate
+        for delim in _CANDIDATE_DELIMITERS:
+            tokens = [
+                t
+                for v in values
+                for t in (tok.strip() for tok in v.split(delim))
+                if t
+            ]
+            if not tokens:
+                continue
+            rate = sum(1 for t in tokens if t in uid_set) / len(tokens)
+            if rate > best_rate:
+                best_rate = rate
+                best_delim = delim
+
+        if best_rate >= threshold:
+            kept.append((field, best_delim))
         else:
             logger.info(
-                "ambiguous_fields filter: dropping '%s' (uid match rate %.1f%% < %.0f%%)",
-                field, match_rate * 100, threshold * 100,
+                "ambiguous_fields filter: dropping '%s' (best uid match rate %.1f%% < %.0f%%)",
+                field, best_rate * 100, threshold * 100,
             )
     return kept
 
@@ -421,6 +448,109 @@ async def _propose_ambiguous_fields(
 
 
 # ---------------------------------------------------------------------------
+# Call 4: ambiguous field rules
+# ---------------------------------------------------------------------------
+
+async def _resolve_ambiguous_field_rules(
+    field_delimiter_pairs: list[tuple[str, str]],
+    sample: list[dict],
+    node_types: list[DatasetNodeType],
+    relationship_types: list[DatasetRelationshipType],
+    id_field: str,
+    backend: ModelBackend,
+    max_retries: int,
+) -> list[AmbiguousFieldRule]:
+    if not field_delimiter_pairs:
+        return []
+
+    # Build field → sample values mapping (up to 25 distinct non-None scalars per field)
+    field_value_samples: dict[str, list[str]] = {}
+    for field, _ in field_delimiter_pairs:
+        seen: list[str] = []
+        for record in sample:
+            val = record.get(field)
+            if val is None or isinstance(val, (dict, list)):
+                continue
+            sv = str(val)
+            if sv and sv not in seen:
+                seen.append(sv)
+            if len(seen) >= 25:
+                break
+        field_value_samples[field] = seen
+
+    uid_sample = [
+        str(r[id_field])
+        for r in sample
+        if r.get(id_field) is not None
+    ][:50]
+
+    field_delimiter_hints = "\n".join(
+        f"{field}: {repr(delim) if delim else '(whole value)'}"
+        for field, delim in field_delimiter_pairs
+    )
+
+    template = _AMBIGUOUS_RULES_PROMPT_PATH.read_text(encoding="utf-8")
+    prompt = template.format(
+        field_delimiter_hints=field_delimiter_hints,
+        field_value_samples_json=json.dumps(field_value_samples, indent=2, ensure_ascii=False),
+        uid_sample_json=json.dumps(uid_sample, ensure_ascii=False),
+        node_types_json=json.dumps(
+            [{"name": nt.name, "maps_to": nt.maps_to} for nt in node_types],
+            ensure_ascii=False,
+        ),
+        relationship_types_json=json.dumps(
+            [{"maps_to": rt.maps_to, "from": rt.from_type, "to": rt.to_type}
+             for rt in relationship_types],
+            ensure_ascii=False,
+        ),
+    )
+
+    try:
+        messages: list[dict] = [{"role": "user", "content": prompt}]
+        raw = await _llm_call(
+            backend, messages, max_retries=max_retries,
+            label="ambiguous_field_rules",
+            response_format=_AMBIGUOUS_RULES_FORMAT,
+        )
+        text = _clean_llm_output(raw)
+        data = json.loads(text)
+        if not isinstance(data, dict) or "rules" not in data:
+            raise ValueError(f"missing 'rules' key in response: {type(data).__name__}")
+        parsed_rules = data["rules"]
+        if not isinstance(parsed_rules, list):
+            raise ValueError(f"'rules' is not a list: {type(parsed_rules).__name__}")
+    except Exception as exc:
+        logger.warning("ambiguous_field_rules failed, skipping: %s", exc)
+        return []
+
+    allowed_rel_types = {rt.maps_to for rt in relationship_types}
+    valid_rules: list[AmbiguousFieldRule] = []
+    dropped = 0
+    for item in parsed_rules:
+        if not isinstance(item, dict):
+            dropped += 1
+            continue
+        if item.get("rel_type") not in allowed_rel_types:
+            logger.debug(
+                "ambiguous_field_rules: dropping rule for field '%s' — unknown rel_type '%s'",
+                item.get("field"), item.get("rel_type"),
+            )
+            dropped += 1
+            continue
+        try:
+            valid_rules.append(AmbiguousFieldRule(**item))
+        except Exception as exc:
+            logger.warning("ambiguous_field_rules: skipping malformed rule: %s", exc)
+            dropped += 1
+
+    if dropped:
+        logger.warning("ambiguous_field_rules: dropped %d rule(s) with unknown or invalid rel_type", dropped)
+
+    logger.info("ambiguous_field_rules: resolved %d rule(s)", len(valid_rules))
+    return valid_rules
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -477,11 +607,21 @@ async def propose_dataset_context(
         id_field=structural_config.get("id_field") or "uniqueId",
         type_field=structural_config.get("type_field") or "typeName",
     )
-    ambiguous_fields = _filter_ambiguous_by_uid_coverage(
+    field_delimiter_pairs = _filter_ambiguous_by_uid_coverage(
         ambiguous_fields,
         sample,
         id_field=structural_config.get("id_field") or "uniqueId",
     )
+    ambiguous_fields_names = [f for f, _ in field_delimiter_pairs]
+
+    ambiguous_field_rules: list[AmbiguousFieldRule] = []
+    if field_delimiter_pairs:
+        ambiguous_field_rules = await _resolve_ambiguous_field_rules(
+            field_delimiter_pairs, sample, node_types, rel_types,
+            id_field=structural_config.get("id_field") or "uniqueId",
+            backend=backend,
+            max_retries=max_retries,
+        )
 
     # hierarchy_config
     hierarchy_config: HierarchyConfig | None = None
@@ -527,7 +667,8 @@ async def propose_dataset_context(
         nested_collections=nested_collections,
         association_config=association_config,
         hierarchy_config=hierarchy_config,
-        ambiguous_fields=ambiguous_fields,
+        ambiguous_fields=ambiguous_fields_names,
+        ambiguous_field_rules=ambiguous_field_rules,
         property_paths=property_paths,
     )
 

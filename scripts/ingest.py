@@ -67,6 +67,14 @@ def _schema_preview(ctx: "DatasetContext") -> str:
         )
     if ctx.ambiguous_fields:
         lines.append(f"        ambiguous_fields: {', '.join(ctx.ambiguous_fields)}")
+    if ctx.ambiguous_field_rules:
+        lines.append(f"        ambiguous_field_rules ({len(ctx.ambiguous_field_rules)}):")
+        for rule in ctx.ambiguous_field_rules:
+            direction_arrow = "→" if rule.direction == "out" else "←"
+            lines.append(
+                f"          {rule.field} (split on {rule.delimiter!r}) "
+                f"{direction_arrow} {rule.rel_type} [{rule.to_type}]"
+            )
     return "\n".join(lines)
 
 
@@ -266,6 +274,12 @@ async def main() -> None:
     _step(5, TOTAL_STEPS, "Extracting nodes and relationships...")
     from graph_pipeline.extractor import extract_and_write_stream
     from graph_pipeline.neo4j_writer import WriteBuffer, WriteResult
+
+    if dataset_ctx.ambiguous_fields and not dataset_ctx.ambiguous_field_rules:
+        _indent(
+            "ambiguous_fields present but no ambiguous_field_rules found — "
+            "ambiguous field extraction skipped. Re-run with --force-rediscover to resolve."
+        )
 
     write_result = WriteResult()
     if not args.dry_run:

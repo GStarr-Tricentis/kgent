@@ -1,0 +1,40 @@
+You are finalizing a Neo4j knowledge graph schema for a structured dataset.
+
+Some fields have been identified as potentially containing implicit references to other
+records — their values are delimited strings of record identifiers. Your job is to
+determine how to parse each field into relationships.
+
+AMBIGUOUS FIELDS AND CANDIDATE DELIMITERS:
+{field_delimiter_hints}
+
+SAMPLE VALUES PER FIELD (up to 25 distinct values):
+{field_value_samples_json}
+
+KNOWN RECORD UIDs (sample):
+{uid_sample_json}
+
+KNOWN NODE TYPES:
+{node_types_json}
+
+KNOWN RELATIONSHIP TYPES (name → maps_to, from, to):
+{relationship_types_json}
+
+For each ambiguous field, determine:
+- delimiter: the character that splits the field value into individual record ID tokens
+  (use the candidate delimiter if it looks correct; correct it if the samples show otherwise;
+  use "" if the whole value is always a single token)
+- rel_type: which maps_to relationship type to create between matched records
+  (must be one of the KNOWN RELATIONSHIP TYPES maps_to values)
+- from_type: the from node label (use "" if it should be the current record's own label)
+- to_type: the to node label (the label of the records whose IDs appear in the field)
+- direction: "out" if this record points to the matched record, "in" if the matched record
+  points to this record
+
+Return ONLY valid JSON — no markdown, no explanation — matching this structure:
+{{"rules": [
+  {{"field": "...", "delimiter": "...", "rel_type": "...",
+    "from_type": "...", "to_type": "...", "direction": "out"}}
+]}}
+
+Return an entry only for fields you can confidently resolve. If a field is unresolvable,
+omit it from the rules array.

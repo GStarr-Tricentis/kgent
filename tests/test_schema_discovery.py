@@ -493,7 +493,7 @@ class TestFilterAmbiguousByUidCoverage:
             {"uniqueId": "tc-003", "relatedId": "tc-001"},
         ]
         result = _filter_ambiguous_by_uid_coverage(["relatedId"], sample, id_field="uniqueId")
-        assert result == ["relatedId"]
+        assert result == [("relatedId", "")]
 
     def test_empty_proposed_fields(self):
         from graph_pipeline.schema_discovery import _filter_ambiguous_by_uid_coverage
@@ -516,7 +516,7 @@ class TestFilterAmbiguousByUidCoverage:
             r["ref"] = val
 
         result = _filter_ambiguous_by_uid_coverage(["ref"], sample, id_field="uniqueId")
-        assert result == ["ref"]
+        assert result == [("ref", "")]
 
         # Drop one match so only 1 of 4 (25%) matches → dropped
         sample[1]["ref"] = "label-C"
@@ -528,6 +528,96 @@ class TestFilterAmbiguousByUidCoverage:
 
         sample = [{"name": "Alice"}, {"name": "Bob"}]
         result = _filter_ambiguous_by_uid_coverage(["name"], sample, id_field="uniqueId")
-        assert result == ["name"]
+        assert result == [("name", "")]
+
+
+class TestFilterAmbiguousDelimited:
+    def test_filter_keeps_delimited_field(self):
+        from graph_pipeline.schema_discovery import _filter_ambiguous_by_uid_coverage
+
+        sample = [
+            {"id": "uid1", "linkedItems": "uid2,uid3"},
+            {"id": "uid2", "linkedItems": "uid1,uid3"},
+            {"id": "uid3", "linkedItems": "uid1,uid2"},
+        ]
+        result = _filter_ambiguous_by_uid_coverage(["linkedItems"], sample, id_field="id")
+        assert result == [("linkedItems", ",")]
+
+    def test_filter_drops_prose_field(self):
+        from graph_pipeline.schema_discovery import _filter_ambiguous_by_uid_coverage
+
+        sample = [
+            {"id": "uid1", "notes": "this is a description"},
+            {"id": "uid2", "notes": "another prose value here"},
+        ]
+        result = _filter_ambiguous_by_uid_coverage(["notes"], sample, id_field="id")
+        assert result == []
+
+
+class TestResolveAmbiguousFieldRules:
+    def _make_backend(self, content: str):
+        class _MockResponse:
+            def __init__(self, c):
+                self.content = c
+                self.tool_calls = []
+                self.finish_reason = "stop"
+                self.assistant_message = {"role": "assistant", "content": c}
+                self.raw = None
+
+        class _MockBackend:
+            async def complete(self, messages, tools, response_format=None):
+                return _MockResponse(content)
+
+        return _MockBackend()
+
+    def _make_failing_backend(self):
+        class _FailingBackend:
+            async def complete(self, messages, tools, response_format=None):
+                raise RuntimeError("simulated LLM error")
+
+        return _FailingBackend()
+
+    async def test_resolve_returns_valid_rules(self):
+        import json
+        from graph_pipeline.context_store import DatasetNodeType, DatasetRelationshipType
+        from graph_pipeline.schema_discovery import _resolve_ambiguous_field_rules
+
+        response_json = json.dumps({"rules": [
+            {"field": "linkedItems", "delimiter": ",", "rel_type": "COVERS",
+             "from_type": "", "to_type": "Requirement", "direction": "out"},
+        ]})
+        backend = self._make_backend(response_json)
+        node_types = [DatasetNodeType(name="Requirement", maps_to="Requirement")]
+        rel_types = [DatasetRelationshipType(name="COVERS", maps_to="COVERS")]
+
+        rules = await _resolve_ambiguous_field_rules(
+            [("linkedItems", ",")],
+            sample=[],
+            node_types=node_types,
+            relationship_types=rel_types,
+            id_field="uniqueId",
+            backend=backend,
+            max_retries=1,
+        )
+
+        assert len(rules) == 1
+        assert rules[0].field == "linkedItems"
+        assert rules[0].rel_type == "COVERS"
+
+    async def test_resolve_returns_empty_on_failure(self):
+        from graph_pipeline.context_store import DatasetNodeType, DatasetRelationshipType
+        from graph_pipeline.schema_discovery import _resolve_ambiguous_field_rules
+
+        backend = self._make_failing_backend()
+        rules = await _resolve_ambiguous_field_rules(
+            [("linkedItems", ",")],
+            sample=[],
+            node_types=[DatasetNodeType(name="Item", maps_to="Item")],
+            relationship_types=[DatasetRelationshipType(name="LINKS", maps_to="LINKS")],
+            id_field="uniqueId",
+            backend=backend,
+            max_retries=1,
+        )
+        assert rules == []
 
 

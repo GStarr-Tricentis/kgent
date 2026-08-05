@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Iterator
 
-from kgent.agent.types import ModelBackend
-from graph_pipeline.context_store import DatasetContext, HierarchyConfig, PathFKRelationship, SharedContext
+from graph_pipeline.context_store import AmbiguousFieldRule, DatasetContext, HierarchyConfig, PathFKRelationship, SharedContext
 from graph_pipeline.models import ExtractionSource, Node, Relationship
 from graph_pipeline.neo4j_writer import WriteBuffer, WriteResult
 
 logger = logging.getLogger(__name__)
-
-_ENTITY_EXTRACTION_BATCH_PROMPT = Path(__file__).parent / "prompts" / "entity_extraction_batch.txt"
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -157,153 +150,6 @@ def _build_hierarchy_structures(
 
 
 # ---------------------------------------------------------------------------
-# Rule 7: LLM-assisted extraction for ambiguous fields
-# ---------------------------------------------------------------------------
-
-async def _llm_extract_batch(
-    batch: list[dict],
-    dataset_ctx: DatasetContext,
-    type_map: dict[str, str],
-    backend: ModelBackend,
-) -> tuple[list[Node], list[Relationship]]:
-    """Send one batch of records to the LLM; parse the array response."""
-    template = _ENTITY_EXTRACTION_BATCH_PROMPT.read_text(encoding="utf-8")
-    dataset_id = dataset_ctx.dataset_id
-    id_field = dataset_ctx.id_field
-    ambiguous = dataset_ctx.ambiguous_fields
-
-    allowed_node_labels = {nt.maps_to for nt in dataset_ctx.node_types}
-    for nc in dataset_ctx.nested_collections:
-        allowed_node_labels.add(nc.child_label)
-
-    allowed_rel_types = {rt.maps_to for rt in dataset_ctx.relationship_types}
-    for ir in dataset_ctx.implicit_relationships:
-        allowed_rel_types.add(ir.maps_to)
-    for pfk in dataset_ctx.path_fk_relationships:
-        allowed_rel_types.add(pfk.maps_to)
-    for nc in dataset_ctx.nested_collections:
-        allowed_rel_types.add(nc.edge_type)
-    if dataset_ctx.hierarchy_config:
-        allowed_rel_types.add(dataset_ctx.hierarchy_config.edge_type)
-
-    payload = [
-        {
-            "label": type_map.get(r.get(dataset_ctx.type_field, ""), r.get(dataset_ctx.type_field, "")),
-            "record": r,
-        }
-        for r in batch
-    ]
-    prompt = template.format(
-        dataset_id=dataset_id,
-        id_field=id_field,
-        ambiguous_fields=", ".join(ambiguous),
-        known_node_labels_json=json.dumps(sorted(allowed_node_labels), ensure_ascii=False),
-        known_rel_types_json=json.dumps(sorted(allowed_rel_types), ensure_ascii=False),
-        records_json=json.dumps(payload, indent=2, ensure_ascii=False),
-    )
-
-    nodes: list[Node] = []
-    rels: list[Relationship] = []
-    try:
-        response = await backend.complete(messages=[{"role": "user", "content": prompt}], tools=[])
-        raw = response.content or ""
-        text = raw.strip()
-        if text.startswith("```"):
-            lines = text.splitlines()
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        data = json.loads(text)
-    except Exception as exc:
-        logger.warning("LLM batch extraction failed: %s", exc)
-        return nodes, rels
-
-    if not isinstance(data, list):
-        logger.warning("LLM batch extraction returned non-list: %r", type(data).__name__)
-        return nodes, rels
-
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        record_id = item.get("source_record_id", "")
-        for n in item.get("nodes", []):
-            try:
-                nodes.append(
-                    Node(
-                        id=n["id"],
-                        label=n["label"],
-                        properties=n.get("properties", {}),
-                        source_record_id=n.get("source_record_id", record_id),
-                        extraction_source=ExtractionSource.LLM_INFERRED,
-                    )
-                )
-            except Exception as exc:
-                logger.warning("Skipping malformed node in batch result: %s", exc)
-        for r_item in item.get("relationships", []):
-            try:
-                rels.append(
-                    Relationship(
-                        from_id=r_item["from_id"],
-                        to_id=r_item["to_id"],
-                        from_label=r_item["from_label"],
-                        to_label=r_item["to_label"],
-                        type=r_item["type"],
-                        properties=r_item.get("properties", {}),
-                        source_record_id=r_item.get("source_record_id", record_id),
-                        extraction_source=ExtractionSource.LLM_INFERRED,
-                    )
-                )
-            except Exception as exc:
-                logger.warning("Skipping malformed relationship in batch result: %s", exc)
-
-    before_nodes, before_rels = len(nodes), len(rels)
-    nodes = [n for n in nodes if n.label in allowed_node_labels]
-    rels = [r for r in rels if r.type in allowed_rel_types]
-    dropped = (before_nodes - len(nodes)) + (before_rels - len(rels))
-    if dropped:
-        logger.debug("Rule 7: filtered %d items with unknown labels/types", dropped)
-
-    return nodes, rels
-
-
-async def _llm_extract_ambiguous(
-    records: list[dict],
-    dataset_ctx: DatasetContext,
-    type_map: dict[str, str],
-    backend: ModelBackend,
-    batch_size: int = 10,
-    max_concurrency: int = 20,
-) -> tuple[list[Node], list[Relationship]]:
-    """Send ambiguous records to the LLM in batches; run all batches concurrently."""
-    ambiguous = dataset_ctx.ambiguous_fields
-    eligible = [r for r in records if any(f in r for f in ambiguous)]
-    if not eligible:
-        return [], []
-
-    batches = [eligible[i : i + batch_size] for i in range(0, len(eligible), batch_size)]
-    sem = asyncio.Semaphore(max_concurrency)
-
-    async def _guarded(batch):
-        async with sem:
-            return await _llm_extract_batch(batch, dataset_ctx, type_map, backend)
-
-    results = await asyncio.gather(
-        *[_guarded(b) for b in batches],
-        return_exceptions=True,
-    )
-
-    llm_nodes: list[Node] = []
-    llm_rels: list[Relationship] = []
-    for result in results:
-        if isinstance(result, BaseException):
-            logger.warning("LLM batch raised: %s", result)
-            continue
-        nodes, rels = result
-        llm_nodes.extend(nodes)
-        llm_rels.extend(rels)
-
-    return llm_nodes, llm_rels
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -311,7 +157,6 @@ async def extract_all(
     records: list[dict],
     dataset_ctx: DatasetContext,
     shared_ctx: SharedContext | None,
-    backend: ModelBackend | None = None,
 ) -> tuple[list[Node], list[Relationship]]:
     """Apply all extraction rules in order. Returns (nodes, relationships)."""
     dataset_id = dataset_ctx.dataset_id
@@ -537,13 +382,22 @@ async def extract_all(
                         )
                     )
 
-    # ----- Rule 7: LLM-assisted extraction for ambiguous fields --------------
-    if dataset_ctx.ambiguous_fields and backend is not None:
-        llm_nodes, llm_rels = await _llm_extract_ambiguous(
-            records, dataset_ctx, type_map, backend
-        )
-        all_nodes.extend(llm_nodes)
-        all_rels.extend(llm_rels)
+    # ----- Rule 7: deterministic ambiguous field relationships ---------------
+    if dataset_ctx.ambiguous_field_rules:
+        uid_set_local = {
+            str(r.get(id_field, ""))
+            for r in records if r.get(id_field) is not None
+        }
+        for record in records:
+            r_uid = record.get(id_field)
+            if not r_uid:
+                continue
+            r_type = record.get(type_field)
+            r_label = type_map.get(r_type, r_type) if r_type else ""
+            all_rels.extend(_apply_ambiguous_field_rules(
+                record, dataset_id, str(r_uid), r_label,
+                dataset_ctx.ambiguous_field_rules, uid_set_local,
+            ))
 
     return all_nodes, all_rels
 
@@ -558,6 +412,8 @@ class ExtractionIndices:
     name_to_node: dict[str, tuple[str, str]] = field(default_factory=dict)
     # For Rule 6b: {target_field: {field_value: namespaced_node_id}}
     path_value_index: dict[str, dict[str, str]] = field(default_factory=dict)
+    # For Rule 7: raw (non-namespaced) UIDs for deterministic ambiguous field matching
+    uid_set: set[str] = field(default_factory=set)
 
 
 def build_extraction_indices(
@@ -589,6 +445,8 @@ def build_extraction_indices(
         label = type_map.get(type_name, type_name)
         namespaced_id = f"{dataset_id}:{uid}"
 
+        indices.uid_set.add(str(uid))
+
         # name_to_node: used by hierarchy resolver (Rules 3+4)
         name = record.get("name")
         if name:
@@ -612,8 +470,6 @@ class StreamExtractResult:
     write_result: WriteResult
     # Deferred: (record_id, path_string, leaf_uid) — one per record with a path field
     path_tasks: list[tuple[str, str, str]] = field(default_factory=list)
-    # Deferred: records containing ambiguous fields for LLM Rule 7
-    llm_buffer: list[dict] = field(default_factory=list)
 
 
 async def _emit_hierarchy_inline(
@@ -676,13 +532,49 @@ async def _emit_hierarchy_inline(
     return rels
 
 
+def _apply_ambiguous_field_rules(
+    record: dict,
+    dataset_id: str,
+    uid: str,
+    this_label: str,
+    rules: list[AmbiguousFieldRule],
+    uid_set: set[str],
+) -> list[Relationship]:
+    rels: list[Relationship] = []
+    for rule in rules:
+        field_value = record.get(rule.field)
+        if not isinstance(field_value, str) or not field_value:
+            continue
+        if rule.delimiter:
+            tokens = [t.strip() for t in field_value.split(rule.delimiter) if t.strip()]
+        else:
+            tokens = [field_value.strip()] if field_value.strip() else []
+        from_label = rule.from_type or this_label
+        this_namespaced = f"{dataset_id}:{uid}"
+        for token in tokens:
+            if token not in uid_set:
+                continue
+            matched_id = f"{dataset_id}:{token}"
+            if rule.direction == "out":
+                from_id, to_id = this_namespaced, matched_id
+            else:
+                from_id, to_id = matched_id, this_namespaced
+            rels.append(Relationship(
+                from_id=from_id, to_id=to_id,
+                from_label=from_label, to_label=rule.to_type,
+                type=rule.rel_type, properties={},
+                source_record_id=uid,
+                extraction_source=ExtractionSource.RULE_BASED,
+            ))
+    return rels
+
+
 async def extract_and_write_stream(
     records_iter: Iterator[dict],
     dataset_ctx: DatasetContext,
     shared_ctx: SharedContext | None,
     indices: ExtractionIndices,
     buffer: WriteBuffer,
-    backend: ModelBackend | None = None,
 ) -> StreamExtractResult:
     """Pass 3: stream ingest records, apply Rules 1/2/5/6/6b inline, defer 3+4 and 7.
 
@@ -844,24 +736,18 @@ async def extract_and_write_stream(
                                         extraction_source=ExtractionSource.RULE_BASED,
                                     ))
 
-        # Rule 7: collect LLM-eligible records for deferred processing
-        if dataset_ctx.ambiguous_fields and any(f in record for f in dataset_ctx.ambiguous_fields):
-            result.llm_buffer.append(record)
+        # Rule 7: deterministic ambiguous field relationships
+        if dataset_ctx.ambiguous_field_rules and uid:
+            this_label_r7 = type_map.get(type_name, type_name) if type_name else ""
+            pending_rels.extend(_apply_ambiguous_field_rules(
+                record, dataset_id, uid, this_label_r7,
+                dataset_ctx.ambiguous_field_rules, indices.uid_set,
+            ))
 
     await buffer.flush_all()          # flush all remaining nodes first
 
     for rel in pending_rels:
         await buffer.add_rel(rel)
     await buffer.flush_all()          # flush all deferred rels (endpoints now guaranteed in Neo4j)
-
-    if dataset_ctx.ambiguous_fields and backend is not None and result.llm_buffer:
-        llm_nodes, llm_rels = await _llm_extract_ambiguous(
-            result.llm_buffer, dataset_ctx, type_map, backend
-        )
-        for node in llm_nodes:
-            await buffer.add_node(node)
-        for rel in llm_rels:
-            await buffer.add_rel(rel)
-        await buffer.flush_all()
 
     return result

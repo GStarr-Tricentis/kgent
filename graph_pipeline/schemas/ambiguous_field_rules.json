@@ -1,0 +1,27 @@
+{
+  "name": "ambiguous_field_rules_response",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "required": ["rules"],
+    "additionalProperties": false,
+    "properties": {
+      "rules": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["field", "delimiter", "rel_type", "from_type", "to_type", "direction"],
+          "additionalProperties": false,
+          "properties": {
+            "field":     {"type": "string"},
+            "delimiter": {"type": "string"},
+            "rel_type":  {"type": "string"},
+            "from_type": {"type": "string"},
+            "to_type":   {"type": "string"},
+            "direction": {"type": "string", "enum": ["out", "in"]}
+          }
+        }
+      }
+    }
+  }
+}
