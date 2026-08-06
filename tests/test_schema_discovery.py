@@ -708,9 +708,10 @@ class TestValidatePathFkFromTypes:
 
     def test_correct_from_type_preserved(self):
         from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        # RTSB steps contain moduleUniqueId → RTSB is observed → from_type kept
         sample = [
             {"uniqueId": "r1", "typeName": "RTSB",
-             "details": {"testSteps": [{"uniqueId": "s1"}]}},
+             "details": {"testSteps": [{"uniqueId": "s1", "moduleUniqueId": "m1"}]}},
         ]
         pfk = self._make_pfk("details.testSteps", "RTSB")
         result = _validate_path_fk_from_types([pfk], sample, "typeName")
@@ -718,8 +719,22 @@ class TestValidatePathFkFromTypes:
 
     def test_wrong_from_type_cleared(self):
         from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        # Only RTSB steps contain moduleUniqueId; TestCase steps do not
         sample = [
             {"uniqueId": "r1", "typeName": "RTSB",
+             "details": {"testSteps": [{"uniqueId": "s1", "moduleUniqueId": "m1"}]}},
+            {"uniqueId": "r2", "typeName": "TestCase",
+             "details": {"testSteps": [{"uniqueId": "s2"}]}},
+        ]
+        pfk = self._make_pfk("details.testSteps", "TestCase")
+        result = _validate_path_fk_from_types([pfk], sample, "typeName")
+        assert result[0].from_type == ""
+
+    def test_array_without_fk_field_not_counted(self):
+        from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        # TestCase has non-empty testSteps but no moduleUniqueId → not counted → cleared
+        sample = [
+            {"uniqueId": "r1", "typeName": "TestCase",
              "details": {"testSteps": [{"uniqueId": "s1"}]}},
         ]
         pfk = self._make_pfk("details.testSteps", "TestCase")
@@ -730,7 +745,7 @@ class TestValidatePathFkFromTypes:
         from graph_pipeline.schema_discovery import _validate_path_fk_from_types
         sample = [
             {"uniqueId": "r1", "typeName": "RTSB",
-             "details": {"testSteps": [{"uniqueId": "s1"}]}},
+             "details": {"testSteps": [{"uniqueId": "s1", "moduleUniqueId": "m1"}]}},
         ]
         pfk = self._make_pfk("details.testSteps", "")
         result = _validate_path_fk_from_types([pfk], sample, "typeName")
@@ -744,11 +759,12 @@ class TestValidatePathFkFromTypes:
         )
         assert result[0].from_type == "TestCase"
 
-    def test_multiple_types_have_array_from_type_matches_one(self):
+    def test_multiple_types_only_one_has_fk_field(self):
         from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        # Both types have testSteps but only RTSB items contain moduleUniqueId
         sample = [
             {"uniqueId": "r1", "typeName": "RTSB",
-             "details": {"testSteps": [{"uniqueId": "s1"}]}},
+             "details": {"testSteps": [{"uniqueId": "s1", "moduleUniqueId": "m1"}]}},
             {"uniqueId": "r2", "typeName": "TestCase",
              "details": {"testSteps": [{"uniqueId": "s2"}]}},
         ]
@@ -762,7 +778,7 @@ class TestValidatePathFkFromTypes:
             {"uniqueId": "r1", "typeName": "TestCase",
              "details": {"testSteps": []}},
             {"uniqueId": "r2", "typeName": "RTSB",
-             "details": {"testSteps": [{"uniqueId": "s1"}]}},
+             "details": {"testSteps": [{"uniqueId": "s1", "moduleUniqueId": "m1"}]}},
         ]
         pfk = self._make_pfk("details.testSteps", "TestCase")
         result = _validate_path_fk_from_types([pfk], sample, "typeName")

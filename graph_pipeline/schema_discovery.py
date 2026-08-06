@@ -690,14 +690,17 @@ def _validate_path_fk_from_types(
             if not type_name:
                 continue
             value = _resolve_dot_path(record, pfk.container_path)
-            if isinstance(value, list) and value:
+            if isinstance(value, list) and any(
+                isinstance(item, dict) and item.get(pfk.fk_field)
+                for item in value
+            ):
                 observed_types.add(str(type_name))
 
         if pfk.from_type not in observed_types:
             logger.warning(
                 "path_fk '%s' from_type '%s' not observed in sample "
-                "(types with non-empty '%s': %s) — clearing to use record's own type",
-                pfk.maps_to, pfk.from_type, pfk.container_path, sorted(observed_types),
+                "(types with '%s' in '%s': %s) — clearing to use record's own type",
+                pfk.maps_to, pfk.from_type, pfk.fk_field, pfk.container_path, sorted(observed_types),
             )
             updated.append(pfk.model_copy(update={"from_type": ""}))
         else:
