@@ -694,6 +694,71 @@ class TestValidateAssociationPartnerTypes:
         assert result[0].to_type == "XModule"
 
 
+class TestScanAssociationEdgeNames:
+    def test_detects_edge_names_from_associations_array(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [
+            {"uniqueId": "r1", "associations": [
+                {"edgeName": "Coverage", "partnerUniqueId": "r2"},
+                {"edgeName": "Module", "partnerUniqueId": "r3"},
+            ]},
+            {"uniqueId": "r2", "associations": [
+                {"edgeName": "Coverage", "partnerUniqueId": "r1"},
+            ]},
+        ]
+        result = _scan_association_edge_names(sample)
+        assert result["array_field"] == "associations"
+        assert result["edge_name_subfield"] == "edgeName"
+        assert result["edge_names"] == ["Coverage", "Module"]
+
+    def test_detects_partner_id_subfield(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [
+            {"uniqueId": "r1", "associations": [
+                {"edgeName": "Coverage", "partnerUniqueId": "r2"},
+            ]},
+        ]
+        result = _scan_association_edge_names(sample)
+        assert result["partner_id_subfield"] == "partnerUniqueId"
+
+    def test_returns_empty_when_no_association_array(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [{"uniqueId": "r1", "name": "foo"}]
+        assert _scan_association_edge_names(sample) == {}
+
+    def test_ignores_non_dict_items_in_array(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [
+            {"uniqueId": "r1", "associations": ["not-a-dict", 42, None]},
+        ]
+        assert _scan_association_edge_names(sample) == {}
+
+    def test_deduplicates_edge_names_across_records(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [
+            {"uniqueId": "r1", "associations": [{"edgeName": "Coverage", "partnerUniqueId": "r2"}]},
+            {"uniqueId": "r2", "associations": [{"edgeName": "Coverage", "partnerUniqueId": "r1"}]},
+            {"uniqueId": "r3", "associations": [{"edgeName": "Module", "partnerUniqueId": "r1"}]},
+        ]
+        result = _scan_association_edge_names(sample)
+        assert result["edge_names"] == ["Coverage", "Module"]
+
+    def test_partner_id_subfield_none_when_no_known_field(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [
+            {"uniqueId": "r1", "associations": [
+                {"edgeName": "Coverage", "weirdField": "r2"},
+            ]},
+        ]
+        result = _scan_association_edge_names(sample)
+        assert result["edge_names"] == ["Coverage"]
+        assert result["partner_id_subfield"] is None
+
+    def test_empty_sample_returns_empty(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        assert _scan_association_edge_names([]) == {}
+
+
 class TestResolveAmbiguousFieldRules:
     def _make_backend(self, content: str):
         class _MockResponse:

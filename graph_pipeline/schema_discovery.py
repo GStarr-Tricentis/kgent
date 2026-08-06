@@ -333,6 +333,49 @@ async def _propose_node_types(
     raise RuntimeError(f"node type proposal failed after {max_retries} attempts. Last error: {last_error}")
 
 
+def _scan_association_edge_names(sample: list[dict]) -> dict:
+    """Probe sample for unique edgeName values in the associations array.
+
+    Tries common outer array field names, edge name subfield names, and partner
+    ID subfield names. Returns:
+      {"array_field": str, "edge_name_subfield": str,
+       "partner_id_subfield": str | None, "edge_names": [...]}
+    or {} if no association array is detected.
+    """
+    _ARRAY_FIELDS = ("associations", "links", "edges", "relationships", "relations")
+    _NAME_SUBFIELDS = ("edgeName", "type", "rel", "name", "linkType", "relationshipType")
+    _PARTNER_SUBFIELDS = ("partnerUniqueId", "partnerId", "targetUniqueId", "targetId", "id")
+
+    for array_field in _ARRAY_FIELDS:
+        items = [
+            item
+            for record in sample
+            for item in record.get(array_field, [])
+            if isinstance(item, dict)
+        ]
+        if not items:
+            continue
+        for name_sub in _NAME_SUBFIELDS:
+            edge_names = sorted({
+                str(item[name_sub])
+                for item in items
+                if item.get(name_sub) is not None
+            })
+            if not edge_names:
+                continue
+            partner_id_sub = next(
+                (f for f in _PARTNER_SUBFIELDS if any(item.get(f) is not None for item in items)),
+                None,
+            )
+            return {
+                "array_field": array_field,
+                "edge_name_subfield": name_sub,
+                "partner_id_subfield": partner_id_sub,
+                "edge_names": edge_names,
+            }
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Call 2: relationship types
 # ---------------------------------------------------------------------------
@@ -343,6 +386,7 @@ async def _propose_relationship_types(
     backend: ModelBackend,
     max_retries: int,
     hierarchy_field: str | None = None,
+    edge_name_candidates: dict | None = None,
 ) -> tuple[list[DatasetRelationshipType], list[ImplicitRelationship], list[PathFKRelationship], dict]:
     template = _RELS_PROMPT_PATH.read_text(encoding="utf-8")
     node_types_json = json.dumps(
@@ -368,11 +412,20 @@ async def _propose_relationship_types(
         if hierarchy_field
         else "(none identified for this dataset)"
     )
+    if edge_name_candidates and edge_name_candidates.get("edge_names"):
+        candidates_text = (
+            f"Array field: \"{edge_name_candidates['array_field']}\"\n"
+            f"Edge name subfield: \"{edge_name_candidates['edge_name_subfield']}\"\n"
+            f"Edge names found: {json.dumps(edge_name_candidates['edge_names'])}"
+        )
+    else:
+        candidates_text = "(none detected)"
     prompt = template.format(
         node_types_json=node_types_json,
         structure_summary=summarize_structure(sample),
         sample_records_json=json.dumps(rel_sample, indent=2, ensure_ascii=False),
         hierarchy_field_note=hierarchy_field_note,
+        pre_identified_edge_names=candidates_text,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -603,6 +656,7 @@ def _validate_association_partner_types(
     sample: list[dict],
     id_field: str,
     type_field: str,
+    scan_result: dict | None = None,
 ) -> list[DatasetRelationshipType]:
     """Clear to_type on association rules where sample partners have multiple concrete types.
 
@@ -610,13 +664,23 @@ def _validate_association_partner_types(
     checks whether the actual partner types seen in sample associations are
     heterogeneous. If they are, clears to_type to "" so the Cypher generator
     emits a labelless MATCH rather than silently dropping rels to the minority type.
+
+    Falls back to scan_result when assoc_config is empty and scan_result has a
+    partner_id_subfield — the scan has ground truth from the data.
     """
-    if not assoc_config or not rel_types:
+    effective_config = assoc_config or {}
+    if not effective_config and scan_result and scan_result.get("partner_id_subfield"):
+        effective_config = {
+            "array_field": scan_result["array_field"],
+            "edge_name_subfield": scan_result["edge_name_subfield"],
+            "partner_id_subfield": scan_result["partner_id_subfield"],
+        }
+    if not effective_config or not rel_types:
         return rel_types
 
-    array_field = assoc_config.get("array_field", "associations")
-    edge_name_sub = assoc_config.get("edge_name_subfield", "edgeName")
-    partner_id_sub = assoc_config.get("partner_id_subfield", "partnerUniqueId")
+    array_field = effective_config.get("array_field", "associations")
+    edge_name_sub = effective_config.get("edge_name_subfield", "edgeName")
+    partner_id_sub = effective_config.get("partner_id_subfield", "partnerUniqueId")
 
     uid_type: dict[str, str] = {}
     for record in sample:
@@ -689,15 +753,28 @@ async def propose_dataset_context(
     if isinstance(hc_raw, dict):
         hierarchy_field = hc_raw.get("field") or None
 
+    edge_name_candidates = _scan_association_edge_names(sample)
     rel_types, implicit_rels, path_fk_rels, assoc_config_dict = await _propose_relationship_types(
-        sample, node_types, backend, max_retries, hierarchy_field=hierarchy_field
+        sample, node_types, backend, max_retries,
+        hierarchy_field=hierarchy_field,
+        edge_name_candidates=edge_name_candidates,
     )
+    if edge_name_candidates and edge_name_candidates.get("edge_names"):
+        returned_names = {rt.name for rt in rel_types}
+        missing = [n for n in edge_name_candidates["edge_names"] if n not in returned_names]
+        if missing:
+            logger.warning(
+                "relationship_types is missing pre-identified edge names %s — "
+                "LLM did not honour the MUST instruction; consider re-running schema discovery",
+                missing,
+            )
     rel_types = _validate_association_partner_types(
         rel_types,
         assoc_config_dict,
         sample,
         id_field=structural_config.get("id_field") or "uniqueId",
         type_field=structural_config.get("type_field") or "typeName",
+        scan_result=edge_name_candidates,
     )
 
     handled_fields: list[str] = []

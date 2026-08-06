@@ -11,10 +11,20 @@ DATASET STRUCTURE SUMMARY:
 SAMPLE RECORDS (pay attention to the "associations" and "details" fields):
 {sample_records_json}
 
+PRE-IDENTIFIED ASSOCIATION EDGE NAMES:
+{pre_identified_edge_names}
+
+These edge names were found in the sample's association array. You MUST include
+every one of them in relationship_types — assign a SCREAMING_SNAKE_CASE maps_to,
+and set from_type and to_type from the node types above. Do not omit any edge name
+from this list, even if the same target type also appears in a path_fk_relationship.
+
 TASK — return a JSON object with two keys:
 
-1. "relationship_types": explicit edges from the "associations" array in the data.
-   Each association has an "edgeName" field. Map each edgeName to a SCREAMING_SNAKE_CASE relationship type.
+1. "relationship_types": explicit edges from the associations array in the data.
+   You MUST include every edge name listed under PRE-IDENTIFIED ASSOCIATION EDGE NAMES
+   above. Map each to a SCREAMING_SNAKE_CASE relationship type with from_type and
+   to_type set to canonical labels from NODE TYPES ALREADY DECIDED.
    Example: {{"name": "covers", "maps_to": "COVERS", "from": "TestCase", "to": "Requirement"}}
 
 2. "implicit_relationships": top-level record fields that are direct foreign key
@@ -44,11 +54,10 @@ TASK — return a JSON object with two keys:
       arrays are the signal. Set target_field to "uniqueId". Set container_path to
       the dot-path of the array. Set to_type to "" if the partner could be multiple
       concrete types.
-      Example — each step inside details.steps has "moduleUniqueId" pointing to a
-      module record (which could be XModule or ApiModule):
-      {{"container_path": "details.steps", "fk_field": "moduleUniqueId",
-      "target_field": "uniqueId", "maps_to": "STEP_USES_MODULE",
-      "from_type": "", "to_type": ""}}
+      Example — each item inside order.lineItems has "productId" pointing to a Product:
+      {{"container_path": "order.lineItems", "fk_field": "productId",
+      "target_field": "uniqueId", "maps_to": "CONTAINS_PRODUCT",
+      "from_type": "Order", "to_type": ""}}
 
    For EACH field listed under "Nested array-of-object fields" in the structure
    summary, inspect the sample to see whether items contain fields ending in
