@@ -223,6 +223,17 @@ async def _llm_call(
     raise RuntimeError(f"{label} failed after {max_retries} attempts. Last error: {last_error}")
 
 
+def _resolve_dot_path(record: dict, path: str):
+    """Resolve a dot-separated path into a nested structure.
+    Returns None if any segment is missing or not a dict."""
+    current = record
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
 def _scan_nested_collection_candidates(
     sample: list[dict],
     id_field: str,
@@ -650,6 +661,51 @@ async def _resolve_ambiguous_field_rules(
     return valid_rules
 
 
+def _validate_path_fk_from_types(
+    path_fk_rels: list[PathFKRelationship],
+    sample: list[dict],
+    type_field: str,
+) -> list[PathFKRelationship]:
+    """Clear from_type on path FKs where the LLM's guess doesn't match the sample.
+
+    For each path FK with a non-empty container_path and from_type, scans the sample
+    to find which record types actually have non-empty arrays at that path. If from_type
+    doesn't appear among the observed types, clears it to "" so the extractor uses the
+    record's own type (this_label) instead — which is always correct.
+    """
+    if not path_fk_rels:
+        return path_fk_rels
+    if not any(record.get(type_field) for record in sample):
+        return path_fk_rels
+
+    updated = []
+    for pfk in path_fk_rels:
+        if not pfk.container_path or not pfk.from_type:
+            updated.append(pfk)
+            continue
+
+        observed_types: set[str] = set()
+        for record in sample:
+            type_name = record.get(type_field)
+            if not type_name:
+                continue
+            value = _resolve_dot_path(record, pfk.container_path)
+            if isinstance(value, list) and value:
+                observed_types.add(str(type_name))
+
+        if pfk.from_type not in observed_types:
+            logger.warning(
+                "path_fk '%s' from_type '%s' not observed in sample "
+                "(types with non-empty '%s': %s) — clearing to use record's own type",
+                pfk.maps_to, pfk.from_type, pfk.container_path, sorted(observed_types),
+            )
+            updated.append(pfk.model_copy(update={"from_type": ""}))
+        else:
+            updated.append(pfk)
+
+    return updated
+
+
 def _validate_association_partner_types(
     rel_types: list[DatasetRelationshipType],
     assoc_config: dict,
@@ -775,6 +831,11 @@ async def propose_dataset_context(
         id_field=structural_config.get("id_field") or "uniqueId",
         type_field=structural_config.get("type_field") or "typeName",
         scan_result=edge_name_candidates,
+    )
+    path_fk_rels = _validate_path_fk_from_types(
+        path_fk_rels,
+        sample,
+        type_field=structural_config.get("type_field") or "typeName",
     )
 
     handled_fields: list[str] = []
