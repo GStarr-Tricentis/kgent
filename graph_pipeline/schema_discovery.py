@@ -223,6 +223,17 @@ async def _llm_call(
     raise RuntimeError(f"{label} failed after {max_retries} attempts. Last error: {last_error}")
 
 
+def _resolve_dot_path(record: dict, path: str):
+    """Resolve a dot-separated path into a nested structure.
+    Returns None if any segment is missing or not a dict."""
+    current = record
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
 def _scan_nested_collection_candidates(
     sample: list[dict],
     id_field: str,
@@ -333,6 +344,49 @@ async def _propose_node_types(
     raise RuntimeError(f"node type proposal failed after {max_retries} attempts. Last error: {last_error}")
 
 
+def _scan_association_edge_names(sample: list[dict]) -> dict:
+    """Probe sample for unique edgeName values in the associations array.
+
+    Tries common outer array field names, edge name subfield names, and partner
+    ID subfield names. Returns:
+      {"array_field": str, "edge_name_subfield": str,
+       "partner_id_subfield": str | None, "edge_names": [...]}
+    or {} if no association array is detected.
+    """
+    _ARRAY_FIELDS = ("associations", "links", "edges", "relationships", "relations")
+    _NAME_SUBFIELDS = ("edgeName", "type", "rel", "name", "linkType", "relationshipType")
+    _PARTNER_SUBFIELDS = ("partnerUniqueId", "partnerId", "targetUniqueId", "targetId", "id")
+
+    for array_field in _ARRAY_FIELDS:
+        items = [
+            item
+            for record in sample
+            for item in record.get(array_field, [])
+            if isinstance(item, dict)
+        ]
+        if not items:
+            continue
+        for name_sub in _NAME_SUBFIELDS:
+            edge_names = sorted({
+                str(item[name_sub])
+                for item in items
+                if item.get(name_sub) is not None
+            })
+            if not edge_names:
+                continue
+            partner_id_sub = next(
+                (f for f in _PARTNER_SUBFIELDS if any(item.get(f) is not None for item in items)),
+                None,
+            )
+            return {
+                "array_field": array_field,
+                "edge_name_subfield": name_sub,
+                "partner_id_subfield": partner_id_sub,
+                "edge_names": edge_names,
+            }
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Call 2: relationship types
 # ---------------------------------------------------------------------------
@@ -343,6 +397,7 @@ async def _propose_relationship_types(
     backend: ModelBackend,
     max_retries: int,
     hierarchy_field: str | None = None,
+    edge_name_candidates: dict | None = None,
 ) -> tuple[list[DatasetRelationshipType], list[ImplicitRelationship], list[PathFKRelationship], dict]:
     template = _RELS_PROMPT_PATH.read_text(encoding="utf-8")
     node_types_json = json.dumps(
@@ -368,11 +423,20 @@ async def _propose_relationship_types(
         if hierarchy_field
         else "(none identified for this dataset)"
     )
+    if edge_name_candidates and edge_name_candidates.get("edge_names"):
+        candidates_text = (
+            f"Array field: \"{edge_name_candidates['array_field']}\"\n"
+            f"Edge name subfield: \"{edge_name_candidates['edge_name_subfield']}\"\n"
+            f"Edge names found: {json.dumps(edge_name_candidates['edge_names'])}"
+        )
+    else:
+        candidates_text = "(none detected)"
     prompt = template.format(
         node_types_json=node_types_json,
         structure_summary=summarize_structure(sample),
         sample_records_json=json.dumps(rel_sample, indent=2, ensure_ascii=False),
         hierarchy_field_note=hierarchy_field_note,
+        pre_identified_edge_names=candidates_text,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -597,12 +661,61 @@ async def _resolve_ambiguous_field_rules(
     return valid_rules
 
 
+def _validate_path_fk_from_types(
+    path_fk_rels: list[PathFKRelationship],
+    sample: list[dict],
+    type_field: str,
+) -> list[PathFKRelationship]:
+    """Clear from_type on path FKs where the LLM's guess doesn't match the sample.
+
+    For each path FK with a non-empty container_path and from_type, scans the sample
+    to find which record types actually have non-empty arrays at that path. If from_type
+    doesn't appear among the observed types, clears it to "" so the extractor uses the
+    record's own type (this_label) instead — which is always correct.
+    """
+    if not path_fk_rels:
+        return path_fk_rels
+    if not any(record.get(type_field) for record in sample):
+        return path_fk_rels
+
+    updated = []
+    for pfk in path_fk_rels:
+        if not pfk.container_path or not pfk.from_type:
+            updated.append(pfk)
+            continue
+
+        observed_types: set[str] = set()
+        for record in sample:
+            type_name = record.get(type_field)
+            if not type_name:
+                continue
+            value = _resolve_dot_path(record, pfk.container_path)
+            if isinstance(value, list) and any(
+                isinstance(item, dict) and item.get(pfk.fk_field)
+                for item in value
+            ):
+                observed_types.add(str(type_name))
+
+        if pfk.from_type not in observed_types:
+            logger.warning(
+                "path_fk '%s' from_type '%s' not observed in sample "
+                "(types with '%s' in '%s': %s) — clearing to use record's own type",
+                pfk.maps_to, pfk.from_type, pfk.fk_field, pfk.container_path, sorted(observed_types),
+            )
+            updated.append(pfk.model_copy(update={"from_type": ""}))
+        else:
+            updated.append(pfk)
+
+    return updated
+
+
 def _validate_association_partner_types(
     rel_types: list[DatasetRelationshipType],
     assoc_config: dict,
     sample: list[dict],
     id_field: str,
     type_field: str,
+    scan_result: dict | None = None,
 ) -> list[DatasetRelationshipType]:
     """Clear to_type on association rules where sample partners have multiple concrete types.
 
@@ -610,13 +723,23 @@ def _validate_association_partner_types(
     checks whether the actual partner types seen in sample associations are
     heterogeneous. If they are, clears to_type to "" so the Cypher generator
     emits a labelless MATCH rather than silently dropping rels to the minority type.
+
+    Falls back to scan_result when assoc_config is empty and scan_result has a
+    partner_id_subfield — the scan has ground truth from the data.
     """
-    if not assoc_config or not rel_types:
+    effective_config = assoc_config or {}
+    if not effective_config and scan_result and scan_result.get("partner_id_subfield"):
+        effective_config = {
+            "array_field": scan_result["array_field"],
+            "edge_name_subfield": scan_result["edge_name_subfield"],
+            "partner_id_subfield": scan_result["partner_id_subfield"],
+        }
+    if not effective_config or not rel_types:
         return rel_types
 
-    array_field = assoc_config.get("array_field", "associations")
-    edge_name_sub = assoc_config.get("edge_name_subfield", "edgeName")
-    partner_id_sub = assoc_config.get("partner_id_subfield", "partnerUniqueId")
+    array_field = effective_config.get("array_field", "associations")
+    edge_name_sub = effective_config.get("edge_name_subfield", "edgeName")
+    partner_id_sub = effective_config.get("partner_id_subfield", "partnerUniqueId")
 
     uid_type: dict[str, str] = {}
     for record in sample:
@@ -689,14 +812,32 @@ async def propose_dataset_context(
     if isinstance(hc_raw, dict):
         hierarchy_field = hc_raw.get("field") or None
 
+    edge_name_candidates = _scan_association_edge_names(sample)
     rel_types, implicit_rels, path_fk_rels, assoc_config_dict = await _propose_relationship_types(
-        sample, node_types, backend, max_retries, hierarchy_field=hierarchy_field
+        sample, node_types, backend, max_retries,
+        hierarchy_field=hierarchy_field,
+        edge_name_candidates=edge_name_candidates,
     )
+    if edge_name_candidates and edge_name_candidates.get("edge_names"):
+        returned_names = {rt.name for rt in rel_types}
+        missing = [n for n in edge_name_candidates["edge_names"] if n not in returned_names]
+        if missing:
+            logger.warning(
+                "relationship_types is missing pre-identified edge names %s — "
+                "LLM did not honour the MUST instruction; consider re-running schema discovery",
+                missing,
+            )
     rel_types = _validate_association_partner_types(
         rel_types,
         assoc_config_dict,
         sample,
         id_field=structural_config.get("id_field") or "uniqueId",
+        type_field=structural_config.get("type_field") or "typeName",
+        scan_result=edge_name_candidates,
+    )
+    path_fk_rels = _validate_path_fk_from_types(
+        path_fk_rels,
+        sample,
         type_field=structural_config.get("type_field") or "typeName",
     )
 

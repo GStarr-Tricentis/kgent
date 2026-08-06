@@ -694,6 +694,175 @@ class TestValidateAssociationPartnerTypes:
         assert result[0].to_type == "XModule"
 
 
+class TestValidatePathFkFromTypes:
+    def _make_pfk(self, container_path, from_type, maps_to="STEP_USES_MODULE"):
+        from graph_pipeline.context_store import PathFKRelationship
+        return PathFKRelationship(
+            container_path=container_path,
+            fk_field="moduleUniqueId",
+            target_field="uniqueId",
+            maps_to=maps_to,
+            from_type=from_type,
+            to_type="",
+        )
+
+    def test_correct_from_type_preserved(self):
+        from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        # RTSB steps contain moduleUniqueId → RTSB is observed → from_type kept
+        sample = [
+            {"uniqueId": "r1", "typeName": "RTSB",
+             "details": {"testSteps": [{"uniqueId": "s1", "moduleUniqueId": "m1"}]}},
+        ]
+        pfk = self._make_pfk("details.testSteps", "RTSB")
+        result = _validate_path_fk_from_types([pfk], sample, "typeName")
+        assert result[0].from_type == "RTSB"
+
+    def test_wrong_from_type_cleared(self):
+        from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        # Only RTSB steps contain moduleUniqueId; TestCase steps do not
+        sample = [
+            {"uniqueId": "r1", "typeName": "RTSB",
+             "details": {"testSteps": [{"uniqueId": "s1", "moduleUniqueId": "m1"}]}},
+            {"uniqueId": "r2", "typeName": "TestCase",
+             "details": {"testSteps": [{"uniqueId": "s2"}]}},
+        ]
+        pfk = self._make_pfk("details.testSteps", "TestCase")
+        result = _validate_path_fk_from_types([pfk], sample, "typeName")
+        assert result[0].from_type == ""
+
+    def test_array_without_fk_field_not_counted(self):
+        from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        # TestCase has non-empty testSteps but no moduleUniqueId → not counted → cleared
+        sample = [
+            {"uniqueId": "r1", "typeName": "TestCase",
+             "details": {"testSteps": [{"uniqueId": "s1"}]}},
+        ]
+        pfk = self._make_pfk("details.testSteps", "TestCase")
+        result = _validate_path_fk_from_types([pfk], sample, "typeName")
+        assert result[0].from_type == ""
+
+    def test_empty_from_type_unchanged(self):
+        from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        sample = [
+            {"uniqueId": "r1", "typeName": "RTSB",
+             "details": {"testSteps": [{"uniqueId": "s1", "moduleUniqueId": "m1"}]}},
+        ]
+        pfk = self._make_pfk("details.testSteps", "")
+        result = _validate_path_fk_from_types([pfk], sample, "typeName")
+        assert result[0].from_type == ""
+
+    def test_null_container_path_unchanged(self):
+        from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        pfk = self._make_pfk(None, "TestCase")
+        result = _validate_path_fk_from_types(
+            [pfk], [{"uniqueId": "r1", "typeName": "TestCase"}], "typeName"
+        )
+        assert result[0].from_type == "TestCase"
+
+    def test_multiple_types_only_one_has_fk_field(self):
+        from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        # Both types have testSteps but only RTSB items contain moduleUniqueId
+        sample = [
+            {"uniqueId": "r1", "typeName": "RTSB",
+             "details": {"testSteps": [{"uniqueId": "s1", "moduleUniqueId": "m1"}]}},
+            {"uniqueId": "r2", "typeName": "TestCase",
+             "details": {"testSteps": [{"uniqueId": "s2"}]}},
+        ]
+        pfk = self._make_pfk("details.testSteps", "RTSB")
+        result = _validate_path_fk_from_types([pfk], sample, "typeName")
+        assert result[0].from_type == "RTSB"
+
+    def test_empty_array_not_counted(self):
+        from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        sample = [
+            {"uniqueId": "r1", "typeName": "TestCase",
+             "details": {"testSteps": []}},
+            {"uniqueId": "r2", "typeName": "RTSB",
+             "details": {"testSteps": [{"uniqueId": "s1", "moduleUniqueId": "m1"}]}},
+        ]
+        pfk = self._make_pfk("details.testSteps", "TestCase")
+        result = _validate_path_fk_from_types([pfk], sample, "typeName")
+        assert result[0].from_type == ""
+
+    def test_no_type_field_in_sample_returns_unchanged(self):
+        from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        sample = [
+            {"uniqueId": "r1", "details": {"testSteps": [{"uniqueId": "s1"}]}},
+        ]
+        pfk = self._make_pfk("details.testSteps", "TestCase")
+        result = _validate_path_fk_from_types([pfk], sample, "typeName")
+        assert result[0].from_type == "TestCase"
+
+    def test_empty_path_fk_rels_returns_empty(self):
+        from graph_pipeline.schema_discovery import _validate_path_fk_from_types
+        assert _validate_path_fk_from_types([], [], "typeName") == []
+
+
+class TestScanAssociationEdgeNames:
+    def test_detects_edge_names_from_associations_array(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [
+            {"uniqueId": "r1", "associations": [
+                {"edgeName": "Coverage", "partnerUniqueId": "r2"},
+                {"edgeName": "Module", "partnerUniqueId": "r3"},
+            ]},
+            {"uniqueId": "r2", "associations": [
+                {"edgeName": "Coverage", "partnerUniqueId": "r1"},
+            ]},
+        ]
+        result = _scan_association_edge_names(sample)
+        assert result["array_field"] == "associations"
+        assert result["edge_name_subfield"] == "edgeName"
+        assert result["edge_names"] == ["Coverage", "Module"]
+
+    def test_detects_partner_id_subfield(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [
+            {"uniqueId": "r1", "associations": [
+                {"edgeName": "Coverage", "partnerUniqueId": "r2"},
+            ]},
+        ]
+        result = _scan_association_edge_names(sample)
+        assert result["partner_id_subfield"] == "partnerUniqueId"
+
+    def test_returns_empty_when_no_association_array(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [{"uniqueId": "r1", "name": "foo"}]
+        assert _scan_association_edge_names(sample) == {}
+
+    def test_ignores_non_dict_items_in_array(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [
+            {"uniqueId": "r1", "associations": ["not-a-dict", 42, None]},
+        ]
+        assert _scan_association_edge_names(sample) == {}
+
+    def test_deduplicates_edge_names_across_records(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [
+            {"uniqueId": "r1", "associations": [{"edgeName": "Coverage", "partnerUniqueId": "r2"}]},
+            {"uniqueId": "r2", "associations": [{"edgeName": "Coverage", "partnerUniqueId": "r1"}]},
+            {"uniqueId": "r3", "associations": [{"edgeName": "Module", "partnerUniqueId": "r1"}]},
+        ]
+        result = _scan_association_edge_names(sample)
+        assert result["edge_names"] == ["Coverage", "Module"]
+
+    def test_partner_id_subfield_none_when_no_known_field(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        sample = [
+            {"uniqueId": "r1", "associations": [
+                {"edgeName": "Coverage", "weirdField": "r2"},
+            ]},
+        ]
+        result = _scan_association_edge_names(sample)
+        assert result["edge_names"] == ["Coverage"]
+        assert result["partner_id_subfield"] is None
+
+    def test_empty_sample_returns_empty(self):
+        from graph_pipeline.schema_discovery import _scan_association_edge_names
+        assert _scan_association_edge_names([]) == {}
+
+
 class TestResolveAmbiguousFieldRules:
     def _make_backend(self, content: str):
         class _MockResponse:
