@@ -675,3 +675,115 @@ class TestRecordHashStore:
         (tmp_path / "datasets" / "bad_ds_hashes.json").write_text("not valid json {{{{")
         result = cs.load_record_hashes("bad_ds")
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Atomic write guarantees
+# ---------------------------------------------------------------------------
+
+class TestAtomicWrites:
+    def _reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GRAPH_PIPELINE_CONTEXT_DIR", str(tmp_path))
+        import importlib
+        from graph_pipeline import context_store
+        importlib.reload(context_store)
+        return context_store
+
+    # --- happy path: no temp-file residue after a successful write ---
+
+    def test_save_yaml_leaves_no_tmp_file(self, tmp_path, monkeypatch):
+        cs = self._reload(tmp_path, monkeypatch)
+        ctx = make_dataset_ctx(dataset_id="ds1")
+        cs.save_dataset_context(ctx)
+        assert list((tmp_path / "datasets").glob("*.tmp")) == []
+
+    def test_save_record_hashes_leaves_no_tmp_file(self, tmp_path, monkeypatch):
+        cs = self._reload(tmp_path, monkeypatch)
+        cs.save_record_hashes("ds1", {"tc-001": "abc123"})
+        assert list((tmp_path / "datasets").glob("*.tmp")) == []
+
+    # --- os.replace failure: original file untouched, no temp residue ---
+
+    def test_save_yaml_original_unchanged_on_replace_failure(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+        cs = self._reload(tmp_path, monkeypatch)
+
+        ctx = make_dataset_ctx(dataset_id="ds1", node_types=[make_node_type("TestCase", "TestCase")])
+        cs.save_dataset_context(ctx)
+        target = tmp_path / "datasets" / "ds1.yaml"
+        original = target.read_text()
+
+        with patch("os.replace", side_effect=OSError("simulated disk full")):
+            with pytest.raises(OSError, match="simulated disk full"):
+                cs.save_dataset_context(ctx)
+
+        assert target.read_text() == original
+        assert list((tmp_path / "datasets").glob("*.tmp")) == []
+
+    def test_save_record_hashes_original_unchanged_on_replace_failure(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+        cs = self._reload(tmp_path, monkeypatch)
+
+        cs.save_record_hashes("ds1", {"tc-001": "abc123"})
+        target = tmp_path / "datasets" / "ds1_hashes.json"
+        original = target.read_text()
+
+        with patch("os.replace", side_effect=OSError("simulated disk full")):
+            with pytest.raises(OSError):
+                cs.save_record_hashes("ds1", {"tc-002": "def456"})
+
+        assert target.read_text() == original
+        assert list((tmp_path / "datasets").glob("*.tmp")) == []
+
+    # --- serialiser failure: no temp residue when yaml/json.dump raises ---
+
+    def test_save_yaml_no_tmp_residue_on_serialisation_error(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+        cs = self._reload(tmp_path, monkeypatch)
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+
+        with patch("yaml.dump", side_effect=RuntimeError("encoder crash")):
+            with pytest.raises(RuntimeError):
+                cs.save_dataset_context(make_dataset_ctx(dataset_id="ds1"))
+
+        assert list((tmp_path / "datasets").glob("*.tmp")) == []
+
+    def test_save_record_hashes_no_tmp_residue_on_serialisation_error(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+        cs = self._reload(tmp_path, monkeypatch)
+        (tmp_path / "datasets").mkdir(parents=True, exist_ok=True)
+
+        with patch("json.dump", side_effect=RuntimeError("encoder crash")):
+            with pytest.raises(RuntimeError):
+                cs.save_record_hashes("ds1", {"tc-001": "abc123"})
+
+        assert list((tmp_path / "datasets").glob("*.tmp")) == []
+
+    # --- concurrent reader never sees an empty file mid-write ---
+
+    def test_concurrent_reader_never_sees_empty_node_types(self, tmp_path, monkeypatch):
+        import threading
+        cs = self._reload(tmp_path, monkeypatch)
+
+        ctx = make_dataset_ctx(
+            dataset_id="ds1",
+            node_types=[make_node_type("TestCase", "TestCase")],
+        )
+        cs.save_dataset_context(ctx)
+
+        stop = threading.Event()
+        errors: list[str] = []
+
+        def reader():
+            while not stop.is_set():
+                loaded = cs.load_dataset_context("ds1")
+                if loaded is not None and loaded.node_types == []:
+                    errors.append("reader saw empty node_types during write")
+
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+        for _ in range(50):
+            cs.save_dataset_context(ctx)
+        stop.set()
+        t.join(timeout=5)
+        assert not errors, errors[0]
