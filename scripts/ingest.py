@@ -257,6 +257,13 @@ async def main() -> None:
             print("ERROR: NEO4J_PASSWORD not set in environment or .env file", file=sys.stderr)
             sys.exit(1)
         driver = _neo4j.AsyncGraphDatabase.driver(uri, auth=(username, password))
+        try:
+            await driver.verify_connectivity()
+            _indent(f"Connected to Neo4j at {uri}.")
+        except Exception as exc:
+            print(f"ERROR: Cannot connect to Neo4j at {uri}: {exc}", file=sys.stderr)
+            await driver.close()
+            sys.exit(1)
 
     # -------------------------------------------------------------------------
     # Pass 2: Build extraction indices (index-build stream pass)

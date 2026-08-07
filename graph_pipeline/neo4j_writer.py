@@ -360,8 +360,12 @@ class WriteBuffer:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
-            if exc_type is None:
+            try:
                 await self.flush_all()
+            except Exception as flush_exc:
+                err_msg = f"flush_all failed during context-manager exit: {flush_exc}"
+                logger.error(err_msg)
+                self.result.errors.append(err_msg)
         finally:
             if self._session is not None:
                 await self._session.__aexit__(exc_type, exc_val, exc_tb)
