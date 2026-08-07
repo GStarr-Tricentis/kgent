@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+import re
+
 from graph_pipeline.models import Node, Relationship
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _validate_identifier(value: str, context: str) -> None:
+    if not _IDENTIFIER_RE.match(value):
+        raise ValueError(
+            f"Invalid Cypher identifier for {context}: {value!r} — "
+            "must match ^[A-Za-z][A-Za-z0-9_]*$"
+        )
 
 
 def generate_node_merge(node: Node) -> tuple[str, dict]:
@@ -10,6 +22,7 @@ def generate_node_merge(node: Node) -> tuple[str, dict]:
     as its string value so Cypher callers don't need to know Python enum internals.
     The caller passes the returned params dict to session.run(cypher, params).
     """
+    _validate_identifier(node.label, "node label")
     cypher = (
         f"MERGE (n:{node.label} {{id: $id}})\n"
         f"SET n += $props\n"
@@ -31,6 +44,11 @@ def generate_relationship_merge(rel: Relationship) -> tuple[str, dict]:
     composite index rather than scanning the full graph. Falls back to labelless
     MATCH if the label is empty (defensive — extractors should always set labels).
     """
+    if rel.from_label:
+        _validate_identifier(rel.from_label, "relationship from_label")
+    if rel.to_label:
+        _validate_identifier(rel.to_label, "relationship to_label")
+    _validate_identifier(rel.type, "relationship type")
     from_clause = f"(a:{rel.from_label} {{id: $from_id}})" if rel.from_label else "(a {id: $from_id})"
     to_clause = f"(b:{rel.to_label} {{id: $to_id}})" if rel.to_label else "(b {id: $to_id})"
     cypher = (
@@ -49,6 +67,7 @@ def generate_relationship_merge(rel: Relationship) -> tuple[str, dict]:
 
 def generate_node_merge_batch(label: str) -> str:
     """UNWIND template for a homogeneous batch of nodes with the same label."""
+    _validate_identifier(label, "node label")
     return (
         f"UNWIND $rows AS row\n"
         f"MERGE (n:{label} {{id: row.id}})\n"
@@ -66,6 +85,11 @@ def generate_relationship_merge_batch(from_label: str, to_label: str, rel_type: 
     Labelless MATCH performs a full node scan; prefer a non-empty label when the
     target type is known.
     """
+    if from_label:
+        _validate_identifier(from_label, "relationship from_label")
+    if to_label:
+        _validate_identifier(to_label, "relationship to_label")
+    _validate_identifier(rel_type, "relationship type")
     from_match = (
         f"(a:{from_label} {{id: row.from_id}})" if from_label else "(a {id: row.from_id})"
     )
@@ -87,6 +111,8 @@ def generate_constraint_statements(labels: list[str]) -> list[str]:
     Uniqueness constraints implicitly create an index AND prevent silent duplicate
     creation — safer than a plain CREATE INDEX.
     """
+    for label in labels:
+        _validate_identifier(label, "node label")
     return [
         f"CREATE CONSTRAINT IF NOT EXISTS FOR (n:{label}) REQUIRE n.id IS UNIQUE"
         for label in labels
@@ -99,6 +125,8 @@ def generate_extraction_source_index_statements(labels: list[str]) -> list[str]:
     Allows efficient filtering by extraction source without scanning all nodes of a label.
     Indexes are created with IF NOT EXISTS so re-running ingest is safe.
     """
+    for label in labels:
+        _validate_identifier(label, "node label")
     return [
         f"CREATE INDEX IF NOT EXISTS FOR (n:{label}) ON (n.extraction_source)"
         for label in labels

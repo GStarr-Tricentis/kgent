@@ -342,3 +342,108 @@ def test_generate_node_merge_batch_label_is_interpolated():
     from graph_pipeline.cypher_generator import generate_node_merge_batch
     assert "XModule" in generate_node_merge_batch("XModule")
     assert "Folder" in generate_node_merge_batch("Folder")
+
+
+# ---------------------------------------------------------------------------
+# _validate_identifier — Cypher injection prevention
+# ---------------------------------------------------------------------------
+
+import pytest
+
+class TestValidateIdentifier:
+    """Covers every call-site that interpolates into Cypher strings."""
+
+    # --- valid identifiers should pass without error ---
+
+    def test_valid_label_passes_node_merge(self):
+        from graph_pipeline.cypher_generator import generate_node_merge
+        generate_node_merge(make_node(label="TestCase"))
+
+    def test_valid_label_with_digits_passes(self):
+        from graph_pipeline.cypher_generator import generate_node_merge_batch
+        generate_node_merge_batch("XModule2")
+
+    def test_valid_label_with_underscore_passes(self):
+        from graph_pipeline.cypher_generator import generate_node_merge_batch
+        generate_node_merge_batch("Test_Case")
+
+    # --- invalid labels must raise ValueError ---
+
+    def test_label_with_space_raises(self):
+        from graph_pipeline.cypher_generator import generate_node_merge_batch
+        with pytest.raises(ValueError, match="node label"):
+            generate_node_merge_batch("Test Case")
+
+    def test_label_with_hyphen_raises(self):
+        from graph_pipeline.cypher_generator import generate_node_merge_batch
+        with pytest.raises(ValueError, match="node label"):
+            generate_node_merge_batch("Test-Case")
+
+    def test_label_starting_with_digit_raises(self):
+        from graph_pipeline.cypher_generator import generate_node_merge_batch
+        with pytest.raises(ValueError, match="node label"):
+            generate_node_merge_batch("1TestCase")
+
+    def test_label_with_injection_payload_raises(self):
+        from graph_pipeline.cypher_generator import generate_node_merge_batch
+        with pytest.raises(ValueError, match="node label"):
+            generate_node_merge_batch("TestCase} SET n.pwned=1 //")
+
+    def test_empty_node_label_raises(self):
+        from graph_pipeline.cypher_generator import generate_node_merge_batch
+        with pytest.raises(ValueError, match="node label"):
+            generate_node_merge_batch("")
+
+    def test_rel_type_with_space_raises(self):
+        from graph_pipeline.cypher_generator import generate_relationship_merge_batch
+        with pytest.raises(ValueError, match="relationship type"):
+            generate_relationship_merge_batch("TestCase", "Requirement", "HAS CHILD")
+
+    def test_rel_type_empty_raises(self):
+        from graph_pipeline.cypher_generator import generate_relationship_merge_batch
+        with pytest.raises(ValueError, match="relationship type"):
+            generate_relationship_merge_batch("TestCase", "Requirement", "")
+
+    def test_rel_from_label_with_injection_raises(self):
+        from graph_pipeline.cypher_generator import generate_relationship_merge_batch
+        with pytest.raises(ValueError, match="from_label"):
+            generate_relationship_merge_batch("Bad Label!", "Requirement", "COVERS")
+
+    def test_rel_to_label_with_injection_raises(self):
+        from graph_pipeline.cypher_generator import generate_relationship_merge_batch
+        with pytest.raises(ValueError, match="to_label"):
+            generate_relationship_merge_batch("TestCase", "Bad Label!", "COVERS")
+
+    def test_constraint_invalid_label_raises(self):
+        from graph_pipeline.cypher_generator import generate_constraint_statements
+        with pytest.raises(ValueError, match="node label"):
+            generate_constraint_statements(["ValidLabel", "Invalid Label"])
+
+    def test_index_invalid_label_raises(self):
+        from graph_pipeline.cypher_generator import generate_extraction_source_index_statements
+        with pytest.raises(ValueError, match="node label"):
+            generate_extraction_source_index_statements(["Bad-Label"])
+
+    # --- empty optional labels (from_label / to_label) must still pass ---
+
+    def test_empty_from_label_allowed_in_batch(self):
+        from graph_pipeline.cypher_generator import generate_relationship_merge_batch
+        cypher = generate_relationship_merge_batch("", "Requirement", "COVERS")
+        assert "MATCH (a {id: row.from_id})" in cypher
+
+    def test_empty_to_label_allowed_in_batch(self):
+        from graph_pipeline.cypher_generator import generate_relationship_merge_batch
+        cypher = generate_relationship_merge_batch("TestCase", "", "COVERS")
+        assert "MATCH (b {id: row.to_id})" in cypher
+
+    def test_empty_from_label_allowed_in_single_merge(self):
+        from graph_pipeline.cypher_generator import generate_relationship_merge
+        rel = make_rel(from_label="", to_label="Requirement", type="COVERS")
+        cypher, _ = generate_relationship_merge(rel)
+        assert "MATCH (a {id: $from_id})" in cypher
+
+    def test_empty_to_label_allowed_in_single_merge(self):
+        from graph_pipeline.cypher_generator import generate_relationship_merge
+        rel = make_rel(from_label="TestCase", to_label="", type="COVERS")
+        cypher, _ = generate_relationship_merge(rel)
+        assert "MATCH (b {id: $to_id})" in cypher
