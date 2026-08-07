@@ -178,7 +178,6 @@ model:
 agent:
   max_iterations: 20        # hard cap on tool-call rounds
   tool_timeout_seconds: 30  # per-tool execution timeout
-  repeated_call_window: 3   # identical consecutive calls before error injection
 
 tools:
   static:                   # which static tool groups to register
@@ -224,14 +223,14 @@ python scripts/ingest.py --file path/to/data.jsonl
 ```
 
 On first run the pipeline will:
-1. Sample records and detect structure
-2. Call the LLM to propose node types, relationship types, and structural config
-3. Save a `DatasetContext` YAML to `context/datasets/<dataset-id>.yaml`
-4. Pause for human review of the proposed schema
-5. Extract nodes and relationships
-6. Validate referential integrity (dangling edges are skipped with a warning)
-7. Write to Neo4j
-8. Merge the dataset's types into a shared context for cross-dataset consistency
+1. Pre-scan: reservoir-sample records, compute a dataset fingerprint, and diff per-record hashes
+2. Load the shared context (cross-dataset canonical type registry)
+3. Call the LLM to propose node types, relationship types, and structural config; save the result as a `DatasetContext` YAML to `context/datasets/<dataset-id>.yaml` (skipped automatically when the dataset fingerprint is unchanged — use `--force-rediscover` to override)
+4. Pause for human review of the proposed schema (always required on the first ingest; skippable on re-ingestion when canonical names are unchanged)
+5. Stream-extract and write: nodes first (Pass 3a), then relationships (Pass 3b) — only records whose content has changed since the last run are processed
+6. Validate label coverage against the shared context
+7. Soft-delete records removed from the source file (sets `deleted_at`; nodes remain in the graph) and save per-record hashes for the next incremental run
+8. Merge the dataset's types into the shared context for cross-dataset consistency
 
 | Flag | Default | Description |
 |---|---|---|
@@ -239,10 +238,14 @@ On first run the pipeline will:
 | `--dataset-id` | file stem | Identifier for this dataset |
 | `--model` | `qwen3:8b` | Override the LLM used for schema discovery |
 | `--dry-run` | off | Run extraction and validation without writing to Neo4j |
-| `--skip-review` | off | Skip the human review step if canonical names are unchanged |
+| `--skip-review` | off | Skip human review when canonical names are unchanged (review is always required on the first ingest) |
+| `--force-rediscover` | off | Re-run LLM schema discovery even if the dataset fingerprint is unchanged |
+| `--full-ingest` | off | Bypass the per-record hash cache and process all records |
+| `--prune-deleted` | off | Soft-delete nodes for records no longer present in the source file |
 | `--sample-size` | `50` | Number of records to sample for schema discovery |
 | `--batch-size` | `500` | Neo4j write batch size |
 | `--config` | `kgent/config/config.yaml` | Path to config file |
+| `--provider` | `local` | `local` or `tricentis` |
 
 ### Config (`kgent/config/config.yaml`)
 
@@ -262,9 +265,12 @@ The pipeline is fully config-driven via `DatasetContext` (a Pydantic model store
 - `node_types` — entity labels with canonical Neo4j label mappings
 - `relationship_types` — explicit FK-based edges
 - `implicit_relationships` — edges inferred from matching field values across records
+- `path_fk_relationships` — edges where FK values are path strings matched via a pre-built path index
 - `nested_collections` — child objects embedded inside parent records
 - `hierarchy_config` — folder/path fields that generate phantom ancestor nodes
 - `association_config` — structured association arrays (e.g. `[{edgeName, partnerId, direction}]`)
+- `ambiguous_fields` / `ambiguous_field_rules` — fields whose string values may contain implicit UID references (delimiter-split, statistically validated, resolved by a dedicated LLM call)
+- `property_paths` — dot-path mappings for extracting values from nested fields
 
 Generated context files (`context/datasets/`, `context/shared_context.yaml`) are gitignored — they are runtime artifacts, not source.
 
