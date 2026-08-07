@@ -381,3 +381,129 @@ class TestPrescan:
         fp_a = prescan(iter(records_a), id_field="uniqueId", stored_hashes={}).fingerprint
         fp_b = prescan(iter(records_b), id_field="uniqueId", stored_hashes={}).fingerprint
         assert fp_a != fp_b
+
+
+# ---------------------------------------------------------------------------
+# prescan_sample
+# ---------------------------------------------------------------------------
+
+class TestPrescanSample:
+    def test_returns_prescan_sample_result(self):
+        from graph_pipeline.sampler import PrescanSampleResult, prescan_sample
+        result = prescan_sample(iter(_make_prescan_records(n=10)))
+        assert isinstance(result, PrescanSampleResult)
+
+    def test_sample_size_respected(self):
+        from graph_pipeline.sampler import prescan_sample
+        records = _make_prescan_records(n=100)
+        result = prescan_sample(iter(records), sample_size=10)
+        assert len(result.sample) <= 10
+
+    def test_total_records_counted(self):
+        from graph_pipeline.sampler import prescan_sample
+        result = prescan_sample(iter(_make_prescan_records(n=42)))
+        assert result.total_records == 42
+
+    def test_fingerprint_is_16_char_hex(self):
+        from graph_pipeline.sampler import prescan_sample
+        result = prescan_sample(iter(_make_prescan_records(n=10)))
+        assert len(result.fingerprint) == 16
+        assert all(c in "0123456789abcdef" for c in result.fingerprint)
+
+    def test_fingerprint_stable_across_calls(self):
+        from graph_pipeline.sampler import prescan_sample
+        records = _make_prescan_records(n=30)
+        fp1 = prescan_sample(iter(records)).fingerprint
+        fp2 = prescan_sample(iter(records)).fingerprint
+        assert fp1 == fp2
+
+    def test_fingerprint_changes_on_different_types(self):
+        from graph_pipeline.sampler import prescan_sample
+        records_a = _make_prescan_records(n=10, type_name="TestCase")
+        records_b = _make_prescan_records(n=10, type_name="XModule")
+        assert prescan_sample(iter(records_a)).fingerprint != prescan_sample(iter(records_b)).fingerprint
+
+    def test_empty_iterator(self):
+        from graph_pipeline.sampler import prescan_sample
+        result = prescan_sample(iter([]))
+        assert result.sample == []
+        assert result.total_records == 0
+        assert result.type_field is None
+        assert isinstance(result.fingerprint, str)
+        assert len(result.fingerprint) == 16
+
+    def test_does_not_accept_id_field(self):
+        """prescan_sample has no id_field parameter — calling it without one is valid."""
+        import inspect
+        from graph_pipeline.sampler import prescan_sample
+        sig = inspect.signature(prescan_sample)
+        assert "id_field" not in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# compute_hash_diff
+# ---------------------------------------------------------------------------
+
+class TestComputeHashDiff:
+    def test_returns_hash_diff_result(self):
+        from graph_pipeline.sampler import HashDiffResult, compute_hash_diff
+        result = compute_hash_diff(iter(_make_prescan_records(n=3)), "uniqueId", {})
+        assert isinstance(result, HashDiffResult)
+
+    def test_empty_stored_hashes_all_records_are_ingest_ids(self):
+        from graph_pipeline.sampler import compute_hash_diff
+        records = _make_prescan_records(n=5)
+        result = compute_hash_diff(iter(records), "uniqueId", {})
+        assert result.ingest_ids == {f"r{i}" for i in range(5)}
+        assert result.deleted_ids == set()
+
+    def test_ingest_ids_empty_when_all_match(self):
+        from graph_pipeline.sampler import compute_hash_diff
+        records = _make_prescan_records(n=5)
+        # Build stored hashes from a first pass
+        stored = compute_hash_diff(iter(records), "uniqueId", {}).current_hashes
+        result = compute_hash_diff(iter(records), "uniqueId", stored)
+        assert result.ingest_ids == set()
+        assert result.deleted_ids == set()
+
+    def test_identifies_changed_records(self):
+        from graph_pipeline.sampler import compute_hash_diff
+        records = _make_prescan_records(n=5)
+        stored = compute_hash_diff(iter(records), "uniqueId", {}).current_hashes
+        changed = [dict(r) for r in records]
+        changed[2] = {**changed[2], "name": "CHANGED"}
+        result = compute_hash_diff(iter(changed), "uniqueId", stored)
+        assert "r2" in result.ingest_ids
+        for i in [0, 1, 3, 4]:
+            assert f"r{i}" not in result.ingest_ids
+
+    def test_identifies_deleted_records(self):
+        from graph_pipeline.sampler import compute_hash_diff
+        stored = {"old-id": "aabbccdd11223344"}
+        records = _make_prescan_records(n=3)
+        result = compute_hash_diff(iter(records), "uniqueId", stored)
+        assert "old-id" in result.deleted_ids
+
+    def test_non_default_id_field(self):
+        """Key regression: records keyed by a non-uniqueId field are correctly hashed."""
+        from graph_pipeline.sampler import compute_hash_diff
+        records = [
+            {"customId": f"c{i}", "uniqueId": f"u{i}", "typeName": "Widget"}
+            for i in range(4)
+        ]
+        result = compute_hash_diff(iter(records), id_field="customId", stored_hashes={})
+        # ingest_ids must be keyed by customId values
+        assert result.ingest_ids == {"c0", "c1", "c2", "c3"}
+        # uniqueId values must NOT appear as keys
+        for i in range(4):
+            assert f"u{i}" not in result.ingest_ids
+
+    def test_records_without_id_field_skipped(self):
+        from graph_pipeline.sampler import compute_hash_diff
+        records = [
+            {"customId": "c1", "name": "has id"},
+            {"name": "no id field"},
+        ]
+        result = compute_hash_diff(iter(records), id_field="customId", stored_hashes={})
+        assert "c1" in result.ingest_ids
+        assert len(result.current_hashes) == 1

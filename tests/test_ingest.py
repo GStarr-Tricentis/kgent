@@ -105,17 +105,23 @@ def _make_mock_config(tmp_path):
     return cfg
 
 
-def _make_mock_scan():
-    """Prescan result with one record to ingest (avoids the nothing-to-do early-exit)."""
-    scan = MagicMock()
-    scan.sample = [{"uniqueId": "tc-001"}]
-    scan.fingerprint = "fp123"
-    scan.total_records = 1
-    scan.type_counts = Counter({"TestCase": 1})
-    scan.ingest_ids = {"tc-001"}
-    scan.deleted_ids = set()
-    scan.current_hashes = {"tc-001": "h1"}
-    return scan
+def _make_mock_prescan_sample():
+    """PrescanSampleResult-shaped mock."""
+    m = MagicMock()
+    m.sample = [{"uniqueId": "tc-001"}]
+    m.fingerprint = "fp123"
+    m.total_records = 1
+    m.type_counts = Counter({"TestCase": 1})
+    return m
+
+
+def _make_mock_hash_diff():
+    """HashDiffResult-shaped mock with one record to ingest (avoids the early-exit path)."""
+    m = MagicMock()
+    m.ingest_ids = {"tc-001"}
+    m.deleted_ids = set()
+    m.current_hashes = {"tc-001": "h1"}
+    return m
 
 
 def _make_prior_ctx():
@@ -156,7 +162,8 @@ class TestIngestConnectivityCheck:
              patch("kgent.config.loader.load_config", return_value=_make_mock_config(tmp_path)), \
              patch("kgent.models.factory.make_backend", new_callable=AsyncMock, return_value=MagicMock()), \
              patch("graph_pipeline.loaders.stream", return_value=iter([])), \
-             patch("graph_pipeline.sampler.prescan", return_value=_make_mock_scan()), \
+             patch("graph_pipeline.sampler.prescan_sample", return_value=_make_mock_prescan_sample()), \
+             patch("graph_pipeline.sampler.compute_hash_diff", return_value=_make_mock_hash_diff()), \
              patch("graph_pipeline.context_store.load_record_hashes", return_value={}), \
              patch("graph_pipeline.context_store.load_shared_context", return_value=MagicMock(version=1, node_types=[])), \
              patch("graph_pipeline.context_store.load_dataset_context", return_value=_make_prior_ctx()), \
@@ -178,7 +185,8 @@ class TestIngestConnectivityCheck:
              patch("kgent.config.loader.load_config", return_value=_make_mock_config(tmp_path)), \
              patch("kgent.models.factory.make_backend", new_callable=AsyncMock, return_value=MagicMock()), \
              patch("graph_pipeline.loaders.stream", return_value=iter([])), \
-             patch("graph_pipeline.sampler.prescan", return_value=_make_mock_scan()), \
+             patch("graph_pipeline.sampler.prescan_sample", return_value=_make_mock_prescan_sample()), \
+             patch("graph_pipeline.sampler.compute_hash_diff", return_value=_make_mock_hash_diff()), \
              patch("graph_pipeline.context_store.load_record_hashes", return_value={}), \
              patch("graph_pipeline.context_store.load_shared_context", return_value=MagicMock(version=1, node_types=[])), \
              patch("graph_pipeline.context_store.load_dataset_context", return_value=_make_prior_ctx()), \
@@ -200,7 +208,8 @@ class TestIngestConnectivityCheck:
              patch("kgent.config.loader.load_config", return_value=_make_mock_config(tmp_path)), \
              patch("kgent.models.factory.make_backend", new_callable=AsyncMock, return_value=MagicMock()), \
              patch("graph_pipeline.loaders.stream", return_value=iter([])), \
-             patch("graph_pipeline.sampler.prescan", return_value=_make_mock_scan()), \
+             patch("graph_pipeline.sampler.prescan_sample", return_value=_make_mock_prescan_sample()), \
+             patch("graph_pipeline.sampler.compute_hash_diff", return_value=_make_mock_hash_diff()), \
              patch("graph_pipeline.context_store.load_record_hashes", return_value={}), \
              patch("graph_pipeline.context_store.load_shared_context", return_value=MagicMock(version=1, node_types=[])), \
              patch("graph_pipeline.context_store.load_dataset_context", return_value=_make_prior_ctx()), \
@@ -227,7 +236,8 @@ class TestIngestConnectivityCheck:
              patch("kgent.config.loader.load_config", return_value=_make_mock_config(tmp_path)), \
              patch("kgent.models.factory.make_backend", new_callable=AsyncMock, return_value=MagicMock()), \
              patch("graph_pipeline.loaders.stream", return_value=iter([])), \
-             patch("graph_pipeline.sampler.prescan", return_value=_make_mock_scan()), \
+             patch("graph_pipeline.sampler.prescan_sample", return_value=_make_mock_prescan_sample()), \
+             patch("graph_pipeline.sampler.compute_hash_diff", return_value=_make_mock_hash_diff()), \
              patch("graph_pipeline.context_store.load_record_hashes", return_value={}), \
              patch("graph_pipeline.context_store.load_shared_context", return_value=MagicMock(version=1, node_types=[])), \
              patch("graph_pipeline.context_store.load_dataset_context", return_value=prior_ctx), \
@@ -237,3 +247,44 @@ class TestIngestConnectivityCheck:
             await _ingest_main()
 
         mock_neo4j_driver.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# id_field routing regression
+# ---------------------------------------------------------------------------
+
+class TestIngestIdFieldRouting:
+    async def test_compute_hash_diff_called_with_dataset_ctx_id_field(self, tmp_path, monkeypatch):
+        """compute_hash_diff receives dataset_ctx.id_field, never the hardcoded 'uniqueId'."""
+        monkeypatch.setattr(
+            "sys.argv",
+            ["ingest.py", "--file", str(tmp_path / "dummy.jsonl"), "--skip-review"],
+        )
+        monkeypatch.setenv("NEO4J_URI", "bolt://localhost:7687")
+        monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
+        monkeypatch.setenv("NEO4J_PASSWORD", "testpassword")
+
+        prior_ctx = _make_prior_ctx()
+        prior_ctx.id_field = "customId"  # non-default id_field
+
+        mock_driver = AsyncMock()
+        mock_driver.verify_connectivity.side_effect = Exception("stop here")
+        mock_hash_diff = MagicMock()
+
+        with patch("kgent.config.loader.load_dotenv"), \
+             patch("kgent.config.loader.load_config", return_value=_make_mock_config(tmp_path)), \
+             patch("kgent.models.factory.make_backend", new_callable=AsyncMock, return_value=MagicMock()), \
+             patch("graph_pipeline.loaders.stream", return_value=iter([])), \
+             patch("graph_pipeline.sampler.prescan_sample", return_value=_make_mock_prescan_sample()), \
+             patch("graph_pipeline.sampler.compute_hash_diff", mock_hash_diff) as patched_diff, \
+             patch("graph_pipeline.context_store.load_record_hashes", return_value={}), \
+             patch("graph_pipeline.context_store.load_shared_context", return_value=MagicMock(version=1, node_types=[])), \
+             patch("graph_pipeline.context_store.load_dataset_context", return_value=prior_ctx), \
+             patch("neo4j.AsyncGraphDatabase.driver", return_value=mock_driver):
+            with pytest.raises(SystemExit):
+                await _ingest_main()
+
+        # compute_hash_diff must have been called with id_field="customId", not "uniqueId"
+        assert patched_diff.called
+        _, kwargs = patched_diff.call_args
+        assert kwargs.get("id_field") == "customId" or patched_diff.call_args.args[1] == "customId"

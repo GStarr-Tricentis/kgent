@@ -196,8 +196,110 @@ def compute_fingerprint(records: list[dict], type_field: str | None = None) -> s
 
 
 # ---------------------------------------------------------------------------
-# Streaming pre-scan (Pass 1)
+# Streaming pre-scan (Pass 1) — two-phase API
 # ---------------------------------------------------------------------------
+
+@dataclass
+class PrescanSampleResult:
+    """Output of prescan_sample(): everything that does not require id_field."""
+    sample: list[dict]
+    fingerprint: str
+    type_field: str | None
+    type_counts: Counter
+    total_records: int
+
+
+@dataclass
+class HashDiffResult:
+    """Output of compute_hash_diff(): per-record hashes and incremental diff."""
+    current_hashes: dict[str, str]
+    ingest_ids: set[str]
+    deleted_ids: set[str]
+
+
+def prescan_sample(
+    records_iter: Iterator[dict],
+    sample_size: int = 50,
+) -> PrescanSampleResult:
+    """Phase 1: reservoir sampling, type detection, and fingerprint.
+
+    Does not require id_field — safe to call before schema discovery.
+    Feed the result's .sample into propose_dataset_context(), then call
+    compute_hash_diff() with the discovered id_field for Phase 2.
+    """
+    reservoir: list[dict] = []
+    type_counts: Counter = Counter()
+    type_field_detected: str | None = None
+    total = 0
+
+    for record in records_iter:
+        total += 1
+
+        if len(reservoir) < sample_size:
+            reservoir.append(_truncate_nested_arrays(record))
+        else:
+            j = random.randint(0, total - 1)
+            if j < sample_size:
+                reservoir[j] = _truncate_nested_arrays(record)
+
+        if type_field_detected is None:
+            for candidate in _TYPE_FIELD_CANDIDATES:
+                if candidate in record:
+                    type_field_detected = candidate
+                    break
+
+        if type_field_detected and type_field_detected in record:
+            type_counts[record[type_field_detected]] += 1
+
+    all_keys_in_sample = sorted({k for r in reservoir for k in r.keys()})
+    fp_payload = json.dumps(
+        {"types": dict(type_counts), "keys": all_keys_in_sample}, sort_keys=True
+    )
+    fingerprint = hashlib.sha256(fp_payload.encode()).hexdigest()[:16]
+
+    return PrescanSampleResult(
+        sample=reservoir,
+        fingerprint=fingerprint,
+        type_field=type_field_detected,
+        type_counts=type_counts,
+        total_records=total,
+    )
+
+
+def compute_hash_diff(
+    records_iter: Iterator[dict],
+    id_field: str,
+    stored_hashes: dict[str, str],
+) -> HashDiffResult:
+    """Phase 2: compute per-record hashes and diff against stored hashes.
+
+    Must be called after schema discovery so id_field is correct.
+    Records without id_field are silently skipped, consistent with
+    compute_record_hashes behaviour.
+    """
+    current_hashes: dict[str, str] = {}
+
+    for record in records_iter:
+        record_id = record.get(id_field)
+        if record_id is None:
+            continue
+        digest = hashlib.sha256(
+            json.dumps(record, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()[:16]
+        current_hashes[str(record_id)] = digest
+
+    ingest_ids = {
+        rid for rid, h in current_hashes.items()
+        if stored_hashes.get(rid) != h
+    }
+    deleted_ids = set(stored_hashes.keys()) - set(current_hashes.keys())
+
+    return HashDiffResult(
+        current_hashes=current_hashes,
+        ingest_ids=ingest_ids,
+        deleted_ids=deleted_ids,
+    )
+
 
 @dataclass
 class PrescanResult:
