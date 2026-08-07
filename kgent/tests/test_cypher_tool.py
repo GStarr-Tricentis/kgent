@@ -25,7 +25,7 @@ from kgent.tools.cypher_tool import (
 # Shared helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-SCHEMA_STR = "Node labels:\n  `TestCase`\n  `TestSuite`\n"
+SCHEMA_STR = "Node labels:\n  TestCase\n  TestSuite\n"
 
 
 def _make_config(**cypher_kwargs) -> KgentConfig:
@@ -121,12 +121,12 @@ def test_extract_labels_empty():
 # _known_labels
 # ──────────────────────────────────────────────────────────────────────────────
 
-def test_known_labels_parses_backtick_labels():
-    assert _known_labels("Node labels:\n  `TestCase`\n  `TestSuite`\n") == {"TestCase", "TestSuite"}
+def test_known_labels_parses_plain_labels():
+    assert _known_labels("Node labels:\n  TestCase\n  TestSuite\n") == {"TestCase", "TestSuite"}
 
 
 def test_known_labels_stops_at_next_section():
-    schema = "Node labels:\n  `TestCase`\nRelationship patterns:\n  `Ghost`\n"
+    schema = "Node labels:\n  TestCase\nRelationship patterns:\n  Ghost\n"
     assert _known_labels(schema) == {"TestCase"}
 
 

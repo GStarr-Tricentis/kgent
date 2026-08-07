@@ -153,8 +153,9 @@ def _known_labels(schema_str: str) -> set[str]:
             if not line.startswith(" "):
                 in_labels_section = False
                 continue
-            for m in re.finditer(r'`([A-Za-z][A-Za-z0-9_]*)`', line):
-                labels.add(m.group(1))
+            stripped = line.strip()
+            if stripped and re.match(r'^[A-Za-z][A-Za-z0-9_]*$', stripped):
+                labels.add(stripped)
     return labels
 
 

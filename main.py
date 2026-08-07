@@ -117,7 +117,7 @@ async def main() -> None:
             print("Agent ready. Ctrl-C to exit.")
             while True:
                 try:
-                    line = input("> ").strip()
+                    line = (await asyncio.to_thread(input, "> ")).strip()
                 except (KeyboardInterrupt, EOFError):
                     print("\nBye.")
                     break
