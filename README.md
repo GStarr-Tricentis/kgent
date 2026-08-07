@@ -11,7 +11,7 @@ A tool-using agent that runs against any OpenAI-compatible local model server (O
 
 **Tricentis cloud provider:**
 - Python 3.11+
-- Access to a TAIS tenant — set `TAIS_GATEWAY_URL`, `TAIS_TENANT_NAME`, `TAIS_PRODUCT_NAME`, `KB_NODE_ID`, and `TAIS_LLM_DEPLOYMENT` in `.env`
+- Access to a TAIS tenant — set `TAIS_GATEWAY_URL`, `TAIS_TENANT_NAME`, `TAIS_PRODUCT_NAME`, and `TAIS_LLM_DEPLOYMENT` in `.env`
 - First run triggers a browser device flow login; subsequent runs use the cached token at `./data/tokens.json`
 
 **AWS Bedrock provider:**
@@ -214,7 +214,7 @@ Ingest any structured dataset (CSV, JSON, JSONL, SQLite) into a Neo4j knowledge 
 ### Prerequisites
 
 - Neo4j running locally (or set `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_PASSWORD` in `.env`)
-- Ollama running with a model pulled (default: `qwen3:8b`)
+- A model provider for schema discovery: Ollama with a model pulled (default: `qwen3:8b`) for `--provider local`, or TAIS / Bedrock credentials for the respective cloud providers
 
 ### Ingest a dataset
 
@@ -277,14 +277,20 @@ Generated context files (`context/datasets/`, `context/shared_context.yaml`) are
 ## Running tests
 
 ```bash
-# Unit tests (no Ollama required)
+# Agent unit tests (no Ollama required)
 pytest kgent/tests/ -v --ignore=kgent/tests/integration
 
-# Integration tests (Ollama must be running)
+# Agent integration tests (Ollama must be running)
 pytest kgent/tests/integration/ -v -m integration
 
-# Override model for integration tests
+# Override model for agent integration tests
 AGENT_MODEL=llama3.1:8b pytest kgent/tests/integration/ -v -m integration
+
+# Graph pipeline unit tests (no external services required)
+pytest tests/ -v --ignore=tests/integration
+
+# Graph pipeline integration tests (Neo4j must be running)
+pytest tests/integration/ -v --integration
 ```
 
 ## Known limitations
