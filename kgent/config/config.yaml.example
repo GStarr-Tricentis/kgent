@@ -36,7 +36,7 @@ sandbox:
 
 graph_pipeline:
   context_dir: context/
-  default_sample_size: 50
+  default_sample_size: 650
   default_batch_size: 500
   default_model: qwen3:8b
 

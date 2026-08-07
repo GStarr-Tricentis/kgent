@@ -242,7 +242,7 @@ On first run the pipeline will:
 | `--force-rediscover` | off | Re-run LLM schema discovery even if the dataset fingerprint is unchanged |
 | `--full-ingest` | off | Bypass the per-record hash cache and process all records |
 | `--prune-deleted` | off | Soft-delete nodes for records no longer present in the source file |
-| `--sample-size` | `50` | Number of records to sample for schema discovery |
+| `--sample-size` | `650` | Number of records to sample for schema discovery |
 | `--batch-size` | `500` | Neo4j write batch size |
 | `--config` | `kgent/config/config.yaml` | Path to config file |
 | `--provider` | `local` | `local` or `tricentis` |
@@ -252,7 +252,7 @@ On first run the pipeline will:
 ```yaml
 graph_pipeline:
   context_dir: context/         # where DatasetContext YAMLs are stored
-  default_sample_size: 50
+  default_sample_size: 650
   default_batch_size: 500
   default_model: qwen3:8b
 ```
@@ -294,3 +294,4 @@ AGENT_MODEL=llama3.1:8b pytest kgent/tests/integration/ -v -m integration
 - **Generated tool code runs in sandbox** — only stdlib is available; third-party packages installed in the venv are not accessible from inside `python_exec`.
 - **Graph pipeline is Unix-only** — `context_store.py` uses `fcntl` for file locking, which is not available on Windows. `scripts/ingest.py` will not run on Windows.
 - **Phantom node ID collision in folder hierarchies** — `_build_hierarchy_structures` in `extractor.py` identifies phantom folder nodes by segment name alone. Two folders with the same name under different roots (e.g. `Root1/Setup` and `Root2/Setup`) will collide into a single Neo4j node. Fix tracked: use the full cumulative path as the node ID.
+- **`--sample-size` must be tuned to the model's context window** — the default of 650 records is calibrated for frontier cloud models with large context windows. Relationship type discovery sends the full sample to the LLM, so running with a small local model (~32K-token context) and the default sample size will silently exceed the context window and cause truncation or errors. Reduce `--sample-size` when using a smaller model — a rough formula: `(context_tokens × 4 - 15000) / avg_record_size_chars`. For qwen3:8b (~32K tokens) with typical multi-KB records, 35–50 is a safe ceiling.
