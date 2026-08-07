@@ -5,6 +5,7 @@ import datetime
 import fcntl
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -212,8 +213,15 @@ def _load_yaml(path: Path) -> dict:
 
 def _save_yaml(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+    fd, tmp_str = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    tmp = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _shared_to_dict(sc: SharedContext) -> dict:
@@ -340,8 +348,15 @@ def save_record_hashes(dataset_id: str, hashes: dict[str, str]) -> None:
     """Persist per-record hashes to disk, overwriting the previous store."""
     path = _hash_store_path(dataset_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(hashes, f, sort_keys=True)
+    fd, tmp_str = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    tmp = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(hashes, f, sort_keys=True)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def merge_into_shared(dataset_ctx: DatasetContext) -> SharedContext:

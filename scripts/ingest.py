@@ -119,24 +119,17 @@ async def main() -> None:
     # -------------------------------------------------------------------------
     _step(1, TOTAL_STEPS, f"Sampling {sample_size} records from {Path(file_path).name}...")
     from graph_pipeline.loaders import stream as stream_file
-    from graph_pipeline.sampler import prescan
-    from graph_pipeline.context_store import load_record_hashes
+    from graph_pipeline.sampler import prescan_sample
 
-    stored_hashes = {} if args.full_ingest else load_record_hashes(dataset_id)
-    scan = prescan(
-        stream_file(file_path),
-        id_field="uniqueId",  # Tosca default; overridden after schema discovery
-        stored_hashes=stored_hashes,
-        sample_size=sample_size,
-    )
-    sample = scan.sample
-    fingerprint = scan.fingerprint
+    prescan_result = prescan_sample(stream_file(file_path), sample_size=sample_size)
+    sample = prescan_result.sample
+    fingerprint = prescan_result.fingerprint
 
-    if scan.type_counts:
-        type_summary = ", ".join(f"{t}({c})" for t, c in scan.type_counts.most_common())
+    if prescan_result.type_counts:
+        type_summary = ", ".join(f"{t}({c})" for t, c in prescan_result.type_counts.most_common())
     else:
-        type_summary = f"{scan.total_records} records (no type field detected)"
-    _indent(f"Loaded {scan.total_records} records. Types: {type_summary}")
+        type_summary = f"{prescan_result.total_records} records (no type field detected)"
+    _indent(f"Loaded {prescan_result.total_records} records. Types: {type_summary}")
 
     # -------------------------------------------------------------------------
     # Step 2: Load shared context
@@ -229,17 +222,29 @@ async def main() -> None:
             sys.exit(1)
 
     # -------------------------------------------------------------------------
+    # Phase 2: hash diff — now that schema discovery is complete we know id_field
+    # -------------------------------------------------------------------------
+    from graph_pipeline.sampler import compute_hash_diff
+    from graph_pipeline.context_store import load_record_hashes
+    stored_hashes = {} if args.full_ingest else load_record_hashes(dataset_id)
+    hash_diff = compute_hash_diff(
+        stream_file(file_path),
+        id_field=dataset_ctx.id_field,
+        stored_hashes=stored_hashes,
+    )
+
+    # -------------------------------------------------------------------------
     # Incremental: report changed / deleted counts; early-exit if nothing to do
     # -------------------------------------------------------------------------
-    unchanged_count = scan.total_records - len(scan.ingest_ids)
+    unchanged_count = prescan_result.total_records - len(hash_diff.ingest_ids)
     if unchanged_count:
         _indent(
             f"{unchanged_count} unchanged record(s) skipped; "
-            f"{len(scan.ingest_ids)} to process."
+            f"{len(hash_diff.ingest_ids)} to process."
         )
-    if scan.deleted_ids:
-        _indent(f"{len(scan.deleted_ids)} deleted record(s) detected.")
-    if not scan.ingest_ids and not (args.prune_deleted and scan.deleted_ids):
+    if hash_diff.deleted_ids:
+        _indent(f"{len(hash_diff.deleted_ids)} deleted record(s) detected.")
+    if not hash_diff.ingest_ids and not (args.prune_deleted and hash_diff.deleted_ids):
         _indent("All records unchanged — nothing to ingest.")
         print("\nDone.")
         return
@@ -257,6 +262,13 @@ async def main() -> None:
             print("ERROR: NEO4J_PASSWORD not set in environment or .env file", file=sys.stderr)
             sys.exit(1)
         driver = _neo4j.AsyncGraphDatabase.driver(uri, auth=(username, password))
+        try:
+            await driver.verify_connectivity()
+            _indent(f"Connected to Neo4j at {uri}.")
+        except Exception as exc:
+            print(f"ERROR: Cannot connect to Neo4j at {uri}: {exc}", file=sys.stderr)
+            await driver.close()
+            sys.exit(1)
 
     # -------------------------------------------------------------------------
     # Pass 2: Build extraction indices (index-build stream pass)
@@ -264,7 +276,7 @@ async def main() -> None:
     from graph_pipeline.extractor import build_extraction_indices
     indices = build_extraction_indices(
         (r for r in stream_file(file_path)
-         if str(r.get(dataset_ctx.id_field, "")) in scan.ingest_ids),
+         if str(r.get(dataset_ctx.id_field, "")) in hash_diff.ingest_ids),
         dataset_ctx,
     )
 
@@ -287,7 +299,7 @@ async def main() -> None:
             _indent("Pass 3a: writing nodes...")
             await extract_and_write_stream(
                 (r for r in stream_file(file_path)
-                 if str(r.get(dataset_ctx.id_field, "")) in scan.ingest_ids),
+                 if str(r.get(dataset_ctx.id_field, "")) in hash_diff.ingest_ids),
                 dataset_ctx, shared_ctx, indices, buffer,
                 write_rels=False,
             )
@@ -297,7 +309,7 @@ async def main() -> None:
             _indent("Pass 3b: writing relationships...")
             await extract_and_write_stream(
                 (r for r in stream_file(file_path)
-                 if str(r.get(dataset_ctx.id_field, "")) in scan.ingest_ids),
+                 if str(r.get(dataset_ctx.id_field, "")) in hash_diff.ingest_ids),
                 dataset_ctx, shared_ctx, indices, buffer,
                 write_nodes=False,
             )
@@ -354,16 +366,16 @@ async def main() -> None:
             print("\nERROR: write errors occurred.", file=sys.stderr)
             await driver.close()
             sys.exit(1)
-        if args.prune_deleted and scan.deleted_ids:
+        if args.prune_deleted and hash_diff.deleted_ids:
             from graph_pipeline.neo4j_writer import soft_delete_nodes
-            namespaced = [f"{dataset_id}:{rid}" for rid in scan.deleted_ids]
+            namespaced = [f"{dataset_id}:{rid}" for rid in hash_diff.deleted_ids]
             node_labels = [nt.maps_to for nt in dataset_ctx.node_types]
             soft_deleted_count = await soft_delete_nodes(namespaced, driver, labels=node_labels)
             _indent(f"  {soft_deleted_count} node(s) soft-deleted (deleted_at set; not removed from graph)")
             _indent("  Query with: MATCH (n) WHERE n.deleted_at IS NOT NULL")
         await driver.close()
         from graph_pipeline.context_store import save_record_hashes
-        save_record_hashes(dataset_id, scan.current_hashes)
+        save_record_hashes(dataset_id, hash_diff.current_hashes)
     else:
         _indent("(dry run — no data written)")
 

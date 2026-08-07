@@ -153,3 +153,80 @@ class TestWriteBuffer:
                 raise RuntimeError("simulated error")
 
         mock_session.__aexit__.assert_called_once()
+
+    async def test_flush_all_called_on_exception_exit(self):
+        """Buffered nodes are flushed even when an exception propagates out of the block."""
+        from graph_pipeline.neo4j_writer import WriteBuffer
+
+        driver, _ = _make_driver()
+        flush_calls: list[list[str]] = []
+
+        async def mock_write(nodes, session, batch_size, result):
+            flush_calls.append([n.id for n in nodes])
+
+        with patch("graph_pipeline.neo4j_writer._write_nodes_to_session",
+                   side_effect=mock_write):
+            with pytest.raises(RuntimeError):
+                async with WriteBuffer(driver, batch_size=10) as buf:
+                    await buf.add_node(_make_node(0))
+                    raise RuntimeError("boom")
+
+        assert len(flush_calls) == 1
+        assert flush_calls[0] == ["ds:n0"]
+
+    async def test_buffered_nodes_written_on_exception_exit(self):
+        """The correct node IDs reach the session on exception exit, not just that flush was invoked."""
+        from graph_pipeline.neo4j_writer import WriteBuffer
+
+        driver, _ = _make_driver()
+        written_ids: list[str] = []
+
+        async def mock_write(nodes, session, batch_size, result):
+            written_ids.extend(n.id for n in nodes)
+
+        with patch("graph_pipeline.neo4j_writer._write_nodes_to_session",
+                   side_effect=mock_write):
+            with pytest.raises(ValueError):
+                async with WriteBuffer(driver, batch_size=10) as buf:
+                    for i in range(3):
+                        await buf.add_node(_make_node(i))
+                    raise ValueError("trigger exit")
+
+        assert written_ids == ["ds:n0", "ds:n1", "ds:n2"]
+
+    async def test_flush_error_does_not_mask_original_exception(self):
+        """When both an original exception and a flush exception occur, the original propagates."""
+        from graph_pipeline.neo4j_writer import WriteBuffer
+
+        driver, _ = _make_driver()
+
+        async def raising_flush(nodes, session, batch_size, result):
+            raise RuntimeError("flush failure")
+
+        buf = None
+        with patch("graph_pipeline.neo4j_writer._write_nodes_to_session",
+                   side_effect=raising_flush):
+            with pytest.raises(ValueError, match="original error"):
+                async with WriteBuffer(driver, batch_size=10) as buf:
+                    await buf.add_node(_make_node(0))
+                    raise ValueError("original error")
+
+        assert buf is not None
+        assert any("flush failure" in e for e in buf.result.errors)
+
+    async def test_flush_error_on_clean_exit_recorded_not_raised(self):
+        """A flush error on a clean exit is recorded in result.errors; nothing propagates."""
+        from graph_pipeline.neo4j_writer import WriteBuffer
+
+        driver, _ = _make_driver()
+
+        async def raising_flush(nodes, session, batch_size, result):
+            raise RuntimeError("flush failure")
+
+        with patch("graph_pipeline.neo4j_writer._write_nodes_to_session",
+                   side_effect=raising_flush):
+            async with WriteBuffer(driver, batch_size=10) as buf:
+                await buf.add_node(_make_node(0))
+            # no exception raised here
+
+        assert any("flush failure" in e for e in buf.result.errors)
