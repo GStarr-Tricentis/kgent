@@ -96,7 +96,7 @@ async def main() -> None:
                         help="Soft-delete nodes for records no longer present in the source file "
                              "(sets deleted_at; nodes remain in the graph)")
     parser.add_argument("--config", default="kgent/config/config.yaml")
-    parser.add_argument("--provider", default="local", choices=["local", "tricentis"],
+    parser.add_argument("--provider", default="local", choices=["local", "tricentis", "bedrock"],
                         help="Model provider (default: local)")
     args = parser.parse_args()
 

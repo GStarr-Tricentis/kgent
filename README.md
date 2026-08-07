@@ -245,7 +245,7 @@ On first run the pipeline will:
 | `--sample-size` | `650` | Number of records to sample for schema discovery |
 | `--batch-size` | `500` | Neo4j write batch size |
 | `--config` | `kgent/config/config.yaml` | Path to config file |
-| `--provider` | `local` | `local` or `tricentis` |
+| `--provider` | `local` | `local`, `tricentis`, or `bedrock` |
 
 ### Config (`kgent/config/config.yaml`)
 
@@ -294,4 +294,6 @@ AGENT_MODEL=llama3.1:8b pytest kgent/tests/integration/ -v -m integration
 - **Generated tool code runs in sandbox** — only stdlib is available; third-party packages installed in the venv are not accessible from inside `python_exec`.
 - **Graph pipeline is Unix-only** — `context_store.py` uses `fcntl` for file locking, which is not available on Windows. `scripts/ingest.py` will not run on Windows.
 - **Phantom node ID collision in folder hierarchies** — `_build_hierarchy_structures` in `extractor.py` identifies phantom folder nodes by segment name alone. Two folders with the same name under different roots (e.g. `Root1/Setup` and `Root2/Setup`) will collide into a single Neo4j node. Fix tracked: use the full cumulative path as the node ID.
+- **Filesystem tools have no path sandboxing** — `read_file`, `write_file`, and `list_dir` resolve paths but impose no restrictions. The agent can read or overwrite any file accessible to the current user, including `.env` and config files. This is the same class of risk as the shell tool above; both are intended for local/trusted use only.
+- **Referential integrity is not checked before writing** — `check_referential_integrity()` exists in `graph_pipeline/validator.py` but is not called during ingest. Dangling relationships (edges whose endpoint nodes don't exist in the graph) are silently skipped at write time and reported as warnings in the run summary, but there is no pre-write pass that surfaces them upfront.
 - **`--sample-size` must be tuned to the model's context window** — the default of 650 records is calibrated for frontier cloud models with large context windows. Relationship type discovery sends the full sample to the LLM, so running with a small local model (~32K-token context) and the default sample size will silently exceed the context window and cause truncation or errors. Reduce `--sample-size` when using a smaller model — a rough formula: `(context_tokens × 4 - 15000) / avg_record_size_chars`. For qwen3:8b (~32K tokens) with typical multi-KB records, 35–50 is a safe ceiling.
